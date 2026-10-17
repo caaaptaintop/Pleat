@@ -1,6 +1,6 @@
 # Pleat 品牌资源
 
-本仓库 `caaaptaintop/AI-Cube` 基于 [Kitter](https://github.com/what1f/kitter)。产品显示名称为 **Pleat**，上游 Apache-2.0 许可证和贡献者署名保持。名称尚未核查商标或域名可用性。
+本仓库 `caaaptaintop/Pleat` 基于 [Kitter](https://github.com/what1f/kitter)。产品显示名称为 **Pleat**，上游 Apache-2.0 许可证和贡献者署名保持。名称尚未核查商标或域名可用性。
 
 ## 设计来源与母版
 
@@ -32,6 +32,6 @@ just macos-icon
 
 ## 兼容性边界
 
-只改变产品显示、品牌图形和桌面安装包名称。bundle identifier 仍为 `dev.kitter.app`，内部可执行文件仍为 `Kitter`，Cargo 包与 CLI 命令仍为 `kitter`，签名仍沿用原脚本。应用数据目录仍为 `Kitter`；技能、钥匙串、配置格式与既有来源/下载地址均不因改名而迁移。
+品牌资源覆盖产品显示、品牌图形和桌面安装包名称。bundle identifier 仍为 `dev.kitter.app`，内部可执行文件仍为 `Kitter`，Cargo 包与 CLI 命令仍为 `kitter`，签名仍沿用原脚本。新装默认使用 `Pleat` 数据目录；已有 Kitter 数据保留原位，直到用户明确迁移，迁移后保留旧路径兼容链接。技能、钥匙串、配置格式与既有来源/下载地址不因品牌改名而自动重写。
 
 `LICENSE` 与 `THIRD_PARTY_LICENSES.md` 保持原文，打包时随应用分发；关于区域的署名简化为“基于 Kitter”，下方“项目主页”指向本项目 GitHub，不显示裸网址。本地构建不代表公开发布，也不代表三端运行验收已完成。

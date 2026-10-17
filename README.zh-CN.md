@@ -1,165 +1,144 @@
 # Pleat
 
-<img src="./assets/app-icon.png" width="128" height="128" alt="Pleat">
-
-Pleat 是基于 [Kitter](https://github.com/what1f/kitter) 的技能管理应用，维护于 `caaaptaintop/AI-Cube`。桌面显示名称和图标采用 Pleat；`kitter` CLI、应用技术标识及原有数据路径继续兼容。
-
-[品牌母版与可复现导出](assets/brand/README.md)。本机 macOS 候选通过 `just package` 构建，此品牌候选尚未公开发布。以下保留上游 Kitter 使用文档及下载链接作为参考。
-
-## 上游 Kitter 文档
-
 <p align="center">
-  <img src="./assets/readme/hero.zh-CN.png" width="100%" alt="Kitter：一套 Skill 仓库，让每个项目只获得自己需要的 Skill">
+  <img src="assets/readme/pleat-hero.png" width="100%" alt="Pleat — 基于 Kitter 的 Agent 技能管理应用">
 </p>
 
-<p align="center">
-  <a href="./README.md">English</a>
-</p>
+<p align="center"><a href="README.md">English</a> · <strong>简体中文</strong></p>
 
 <p align="center">
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-3f8997" alt="Apache-2.0 许可证"></a>
-  <img src="https://img.shields.io/badge/desktop-macOS%20%7C%20Windows%20%7C%20Linux-15191a" alt="macOS、Windows 和 Linux 桌面应用">
-  <img src="https://img.shields.io/badge/built_with-Rust-b8aaa0" alt="使用 Rust 构建">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-444444" alt="Apache-2.0"></a>
+  <img src="https://img.shields.io/badge/UI-Rust%20%2B%20GPUI-6C5CE7" alt="Rust 与 GPUI">
+  <img src="https://img.shields.io/badge/CLI-kitter-444444" alt="兼容 kitter CLI">
 </p>
 
-<p align="center"><strong>一套 Skill 仓库，让每个项目只获得自己需要的 Skill。</strong></p>
+**集中维护技能，为每个项目选择合适的组合。**
 
-Kitter 是一个管理 Agent Skill 的桌面应用和 CLI。将 Skill 集中在一套仓库中，为每个项目选择合适的组合，在一处统一更新。
+Pleat 是基于 [Kitter](https://github.com/what1f/kitter) 的桌面应用与 CLI，使用 Rust 和 GPUI 构建。它把技能来源、项目安装、Agent 可发现的内容和预计上下文开销放到同一处管理。
 
-Kitter 完全使用 Rust 和 GPUI 构建，界面简洁直观，体积小、资源占用低，操作流畅。
+本项目由 [caaaptaintop/Pleat](https://github.com/caaaptaintop/Pleat) 维护。Kitter 的技能库和多 Agent 管理能力是基础；Pleat 在其上补充原生项目发现、Proma 工作区管理、本机修改保护、跨项目批量操作和存储迁移。
 
-<p align="center">
-  <img src="./assets/readme/skill-workflow.png" width="100%" alt="Kitter 统一维护 Skill 仓库，按需链接到项目和用户全局">
-</p>
+> 图片说明：顶部主视觉由 ImageGen 基于既有 Pleat 图标制作，是品牌效果图；下方为真实 macOS 应用截图，使用隔离的示例数据，界面中的“示例”项目不代表真实用户资料。
 
-## 为什么选择 Kitter
+## 基于 Kitter 做了哪些改动
 
-同时维护多个项目时，同一个 Skill 往往会有多份副本，各个 Agent 实际能用哪些 Skill 也不容易掌握。Kitter 帮你理清这些关系：
+本 fork 从 Kitter `v0.1.10`（`e953940`）继续开发。以下是本仓库的主要增量；上游的技能导入、统一技能库、按项目安装和 Agent 发现能力继续保留。
 
-- **统一维护**——各个项目链接到同一份 Skill 来源，更新一次即可应用到所有关联安装。
-- **按项目选用**——每个项目拥有自己的 Skill 组合，通用的 Skill 也可以安装到用户级目录。
-- **查看实际生效内容**——了解每个 Agent 能发现的 Skill、来源及预计上下文开销，也能看到 Kitter 之外的安装。
+| 方向 | Pleat 的更新 |
+| --- | --- |
+| 品牌与入口 | Pleat 名称、折面图标、桌面窗口、关于页面和 macOS 安装包；保留 `kitter` CLI 与应用技术标识。 |
+| 原生项目发现 | 读取 Codex 本地项目和 Proma 原生工作区；合并指向同一真实目录的项目，保留工作区归属，支持归档、隐藏与恢复视图。 |
+| Proma 安装管理 | 按原生工作区管理用户技能副本；区分当前托管副本、外部链接、应用集成及本机变体。用户技能安装/卸载，可信内置预设启用/停用。 |
+| 跨项目操作 | 在技能库、项目和技能安装详情中管理多技能、多 Agent、多项目；先查看影响清单，执行后列出失败项。 |
+| 上下文与搜索 | 区分已安装和未安装 Agent；名称搜索、可选描述匹配、来源分类及自动/手动技能与 token 估算，操作沿用当前项目与工作区。 |
+| 更新与本机适配 | 按来源基线、本机文件和新版来源做三方比较；保留未冲突的本机改动，冲突时停止。保护 `local-data/`，支持独立的 `local-data/ADAPTATION.md`。 |
+| 存储与兼容 | 新装使用 Pleat 数据目录；高级设置支持迁移当前库、切换已有库和迁移旧 Kitter 数据根。移动保留旧路径兼容链接，校验目录身份与事务状态。 |
 
-## 安装 Kitter
+## 看看实际界面
 
-从 [GitHub Releases](https://github.com/what1f/kitter/releases/latest) 下载适合你系统的桌面应用。
+### 一个技能库，查看每处安装
 
-- **macOS（Apple Silicon / Intel）**——Apple Silicon 选择 `macos-arm64.dmg`，Intel 选择 `macos-x86_64.dmg`，打开后将 `Kitter.app` 拖入 `Applications`。
-- **Windows（x64）**——下载 `Kitter-<version>-desktop-windows-x86_64.exe`，直接运行。
-- **Linux（x64）**——解压 `Kitter-<version>-desktop-linux-x86_64.tar.gz`，进入解压后的 `Kitter` 目录，运行 `./Kitter`。
+从本地文件夹、GitHub、skills.sh 兼容来源或 Claude 插件来源添加技能，也可以检查并纳管已有安装。分组组织技能，选中后查看来源、内容和项目安装情况。
 
-Kitter 暂时没有 Apple Developer ID 签名。如果首次启动被 macOS 阻止，请确认应用来自官方 Release，再前往 **系统设置 → 隐私与安全 → 仍要打开**，按提示确认。详见 [Apple 官方指引](https://support.apple.com/zh-cn/102445)。
+![Pleat 技能库及安装详情，隔离示例数据](assets/readme/pleat-library.png)
 
-也可以执行以下命令，然后重新打开 Kitter：
+### 按项目和工作区管理
 
-```bash
-xattr -dr com.apple.quarantine /Applications/Kitter.app
-```
+项目页面区分直接安装、继承来源、全局技能和插件。Codex 与 Proma 可以关联同一个项目，同时保留各自的安装位置和工作区。
 
-桌面应用和 CLI 共用同一套核心，但作为两个独立产物发布。GitHub Release 提供 macOS、Windows 和 Linux 的独立 CLI 包；内置 Kitter Skill 会查找这个独立 CLI，并在缺失时引导你下载。
+![Pleat 项目与 Agent 技能概览，隔离示例数据](assets/readme/pleat-project.png)
 
-## 使用 Kitter 管理 Skill
+上下文数字来自目录扫描与静态估算，用于比较已发现的技能；它们不证明 Agent 本轮实际加载了哪些技能，也不代表实际 token 消耗。Proma 副本的安装状态和运行时加载分开判断。
 
-### 1. 建立一套 Skill 仓库
+### 批量操作先看影响范围
 
-点击 **+**，可以从本地目录、GitHub、兼容 skills.sh 的来源或 Claude 插件来源添加 Skill。如果 Skill 已经散落在多个项目中，可以选择 **已有安装**，在不搬动源目录的前提下检查并纳管它们。
+按项目选择技能、Agent 和 Proma 原生工作区，确认目标路径与操作后执行。普通 Agent 使用受管链接；Proma 使用带来源登记的工作区副本，更新需要显式同步。
 
-Kitter 为每个 Skill 保留一份长期维护的来源。打开它的 **安装情况**，就能立即看到哪些项目正在使用它、每个安装位置，以及哪些 Agent 可以发现它。
+![Pleat 多项目技能管理面板，隔离示例数据](assets/readme/pleat-management.png)
 
-<p align="center">
-  <img src="./assets/readme/skill-library.zh-CN.png" width="100%" alt="Kitter Skill 仓库展示同一个托管 Skill 在多个项目中的安装情况">
-</p>
+## 构建与使用
 
-### 2. 只安装到需要的项目
+**本仓库尚未发布 Pleat GitHub Release。** 当前可从源码构建；上游 [Kitter Releases](https://github.com/what1f/kitter/releases) 提供的是 Kitter，不是本 fork 的 Pleat 安装包。
 
-选中一个 Skill 和目标项目，再选择共享的 `.agents/skills` 目录或指定 Agent 的目录。Kitter 建立托管链接，而不是复制出互不相关的副本，因此每个项目都可以拥有自己的 Skill 组合，同时保持来源一致。
+```sh
+git clone https://github.com/caaaptaintop/Pleat.git
+cd Pleat
 
-DimAgent 使用共享安装选项。Oh My Pi（omp）可以使用共享选项，也可以安装到自己的 `.omp/skills` 目录（CLI 使用 `--target omp`）。omp 的用户级安装默认使用 `~/.omp/agent/skills`。
+# 核心与 CLI
+cargo build --release --locked --bin kitter
 
-<p align="center">
-  <img src="./assets/readme/install-skill.zh-CN.png" width="100%" alt="Kitter 安装对话框，可选择目标项目和 Agent 安装位置">
-</p>
-
-各个项目都会用到的 Skill，也可以安装到用户级全局目录。
-
-### 3. 验证实际生效内容
-
-本 fork 会自动读取 Codex 桌面端保存的本地项目，启动时及运行中每 15 秒刷新；过滤云项目缓存及已不存在的目录。每个项目使用主目录，同一真实目录只显示一条，右侧 Codex 图标表示项目来自 Codex 记录。手动选择过的项目会合并到同一列表；右键移除只隐藏 Kitter 中的条目，重新手动选择可恢复。CLI 使用 `kitter projects --json` 查看合并后的列表。
-
-发现过程只读取 `CODEX_HOME`（默认 `~/.codex`）中的项目记录，兼容当前 `local-projects` 和旧版工作区列表，不扫描会话内容。隔离预览可用 `KITTER_CODEX_PROJECTS_HOME` 指定实时项目记录目录；它仅影响项目发现，技能操作仍使用隔离的 `CODEX_HOME`。暂未接入其他 Agent 的项目来源；Agent 技能兼容面板仍按上游规则显示。
-
-打开 **项目**，可以看到每个 Agent 完整的生效 Skill 集合，而不只是 Kitter 托管的安装。Kitter 会发现项目级、上级目录、用户级、内置及插件提供的能力，并标明每一项来自哪里。
-
-每个 Agent 的 token 估算可以帮助你发现不必要的 Skill 上下文开销。
-
-<p align="center">
-  <img src="./assets/readme/project-effective-skills.zh-CN.png" width="100%" alt="Kitter 项目视图展示托管与非托管的实际生效 Skill、插件、Agent 和上下文开销估算">
-</p>
-
-### 4. 只更新一次
-
-在桌面应用中执行 **检查更新**，或使用 `kitter check` 和 `kitter update`。所有托管项目会继续使用同一份维护来源。
-
-更新会比较安装时的来源文件基线、本机当前文件和新版来源。未冲突的本机修改、新增文件与删除会保留；同一文件出现不同修改时停止替换，并报告冲突路径。文件内容、权限、目录与符号链接类型均参与检查；`local-data/` 和根层 `.git` 原位保留，不读取其内容。文件基线保存在已有 `registry.json`，不建立第二套技能目录。
-
-旧版本没有文件基线时会停止更新，不从本机文件或来源缓存猜测基线。切换触发模式也会先检查 `SKILL.md` 和 `agents/openai.yaml` 的本机修改。Kitter 写事务持有写锁，并检查登记版本；失败时恢复代码，保留发生并发修改的原件。外部编辑器不受 Kitter 写锁控制。
-
-本机适配可放在技能内的 `local-data/ADAPTATION.md`，补充脚本和资料也放入同一个 `local-data/`。宿主的 `AGENTS.md` 负责在读取上游入口后加载适配说明；无需修改上游 `SKILL.md` 或建立另一个 `upstream/` 目录。存在此适配入口时，更新与触发模式切换保留上游入口原文，触发模式保存在登记文件中。宿主需按当前登记应用该模式。
-
-对应的 CLI 工作流很简洁：
-
-```bash
-kitter add npx https://github.com/owner/repository --skill skill-a
-kitter install skill-a --project /path/to/project --target universal
-kitter project /path/to/project
-kitter update skill-a
-```
-
-## 独立 CLI 与 Agent Skill
-
-使用 Kitter 不要求安装桌面应用。你可以从 [GitHub Releases](https://github.com/what1f/kitter/releases/latest) 下载独立 CLI，将 `kitter` 放入 `PATH`，然后直接安装 [`$kitter` Skill](./resources/skills/kitter)：
-
-```bash
-npx skills add what1f/kitter --skill kitter
-```
-
-这个 Skill 让 Agent 可以通过独立的 `kitter` CLI 盘点当前机器、添加或纳管 Skill 来源、为项目安装正确组合并验证结果。缺少 CLI 时，它会引导你从官方 Release 下载。
-
-<details>
-<summary><strong>从源码构建</strong></summary>
-
-```bash
-git clone https://github.com/what1f/kitter.git
-cd kitter
+# 启动桌面应用
 cargo run --release --locked --features desktop --bin kitter-desktop
 ```
 
-</details>
+构建需要 Rust 和 Git；桌面平台依赖见 [CI 配置](.github/workflows/ci.yml)。macOS 打包另需 `just` 和系统命令行工具：
 
-## 平台状态
+```sh
+just package
+# target/release/Pleat.app
+# target/release/Pleat-<version>-macos-<arch>.dmg
+```
 
-- **macOS（Apple Silicon / Intel）**——提供桌面应用和独立 CLI。
-- **Windows（x64）**——提供桌面应用和独立 CLI，已在 Windows 上测试，并针对启动和性能问题完成适配修复。
-- **Linux（x64）**——提供独立 CLI 和桌面构建，桌面应用仍需在真实系统中验证。
+本机 macOS 打包脚本使用 ad hoc 签名，尚无 Apple Developer ID 签名与公证。
 
-## 本地数据
+CLI 命令继续使用 `kitter`。下例假定已将构建好的 `target/release/kitter` 加入 `PATH`：
 
-Kitter 将配置和来源记录保存在操作系统的应用数据目录，Skill 内容保存在仓库目录：
+```sh
+kitter list
+kitter projects --json
+kitter add npx https://github.com/owner/repository --skill skill-a
+kitter install skill-a --project /path/to/project --target codex
+kitter project /path/to/project --agent codex
+kitter check
+kitter update skill-a
+```
 
-| 平台 | 默认 Skill 仓库 |
+共享安装使用 `--target universal`，目标是 `.agents/skills`。Agent 专用目录按各 Agent 的规则处理。Proma 仅对已登记的原生工作区操作：
+
+```sh
+kitter proma workspaces --json
+kitter proma status --workspace <workspace-slug> --json
+```
+
+更多参数使用 `kitter --help`、`kitter project --help` 和 `kitter proma --help` 查看。内置技能入口仍为 [`kitter`](resources/skills/kitter)。
+
+## 数据位置与旧路径兼容
+
+新安装的默认技能库：
+
+| 平台 | 默认位置 |
 | --- | --- |
-| macOS | `~/Library/Application Support/Kitter/skills` |
-| Windows | `%LOCALAPPDATA%\Kitter\skills` |
-| Linux | `$XDG_DATA_HOME/Kitter/skills` 或 `~/.local/share/Kitter/skills` |
+| macOS | `~/Library/Application Support/Pleat/skills` |
+| Windows | `%LOCALAPPDATA%\Pleat\skills` |
+| Linux | `$XDG_DATA_HOME/Pleat/skills` 或 `~/.local/share/Pleat/skills` |
 
-使用 `kitter library` 和 `kitter library --set /absolute/path` 查看或修改位置。
+已有 Kitter 数据会继续使用原位置，直到用户明确执行迁移。通过 **设置 → 高级存储设置** 查看迁移计划、迁移当前库或使用已有库；移动后保留原路径兼容链接，让既有安装和本机环境继续访问同一份数据。
 
-## 参与贡献
+迁移拒绝跨磁盘移动、已有冲突数据、目录嵌套及身份不符的目标。未完成的元数据事务会阻止再次开库，需按保存的恢复材料处理，不自动覆盖。`local-data/` 留在原技能实体内，不作为公开技能代码复制到 Proma。
 
-欢迎提交 Issue 和 Pull Request。如果准备进行较大的行为或 UI 改动，请先创建 [Issue](https://github.com/what1f/kitter/issues) 对齐范围。
+```sh
+kitter library
+# 切换到已有的非空技能库；移入空目录请使用桌面迁移功能
+kitter library --set /absolute/path/to/existing/library
+```
 
-如果 Kitter 让你的 Skill 管理变得更从容，欢迎为[项目点一颗 Star](https://github.com/what1f/kitter)，让更多同时维护多个项目的开发者看到它。
+`KITTER_HOME` 仍可显式指定应用数据根。bundle ID `dev.kitter.app`、内部 `Kitter` 可执行文件、Cargo 包名、配置格式和兼容变量名继续保留；仓库和产品名称的变化不要求批量改写技能正文或宿主配置。
 
-## 许可证
+## 平台与验证范围
 
-Kitter 使用 [Apache License 2.0](./LICENSE) 开源。内置字体、图标及其他第三方素材的许可证见 [THIRD_PARTY_LICENSES.md](./THIRD_PARTY_LICENSES.md)。
+| 平台 | 已有证据 |
+| --- | --- |
+| macOS ARM64 | 本机桌面运行、CLI、打包与隔离示例操作已验证；本文截图来自此平台。 |
+| macOS Intel | CI 核心测试与桌面编译检查通过。 |
+| Windows x64 | CI 核心测试与桌面编译检查通过。 |
+| Linux x64 | CI 核心测试与桌面编译检查通过。 |
+
+Windows、Linux 及 Intel Mac 的 CI 结果不替代原生桌面体验验收。查看 [GitHub Actions](https://github.com/caaaptaintop/Pleat/actions) 获取具体提交的状态。
+
+## 上游、贡献与许可
+
+Pleat 基于 [what1f/kitter](https://github.com/what1f/kitter)；感谢 Kitter 上游作者与贡献者提供基础实现。Pleat 的增量通过本仓库提交历史保留，不代表由上游发布或背书。
+
+本项目问题与改进请提交到 [Pleat Issues](https://github.com/caaaptaintop/Pleat/issues)。
+
+沿用 [Apache License 2.0](LICENSE)，保留上游版权与许可证声明。字体、图标及其他第三方素材见 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)。[品牌母版与导出](assets/brand/README.md)及 [README 图片来源](assets/readme/README.md)另有说明。

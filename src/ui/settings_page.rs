@@ -267,7 +267,7 @@ impl KitterApp {
                     .child(
                         div().mt(px(6.)).flex().child(
                             gpui_base::Link::new("about-project-home")
-                                .href("https://github.com/caaaptaintop/AI-Cube")
+                                .href("https://github.com/caaaptaintop/Pleat")
                                 .open_with(|href, _, _, cx| cx.open_url(href))
                                 .accessibility_label(self.tr("项目主页", "Project homepage"))
                                 .text_size(px(12.))

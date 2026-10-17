@@ -5,8 +5,8 @@ edition = "2024"
 description = "A simple, lightweight skill manager built in Rust"
 license = "Apache-2.0"
 readme = "README.md"
-repository = "https://github.com/what1f/kitter"
-homepage = "https://github.com/what1f/kitter"
+repository = "https://github.com/caaaptaintop/Pleat"
+homepage = "https://github.com/caaaptaintop/Pleat"
 
 [features]
 default = []
