@@ -47,8 +47,6 @@ Choose skills, Agents and target projects, then preview the scope. Ordinary Agen
 
 ![Management panel for multiple projects](assets/readme/pleat-management.png)
 
-These screenshots show the macOS app with isolated demo data. The top image was made with ImageGen. See [image provenance](assets/readme/README.md).
-
 ## Get Pleat
 
 No Pleat GitHub Release has been published yet. You can build from source with Rust and Git; see the [CI configuration](.github/workflows/ci.yml) for desktop platform dependencies.
@@ -115,7 +113,7 @@ Existing Kitter data stays in place until you migrate it under **Settings → Ad
 Local adaptations can live in a skill's `local-data/ADAPTATION.md`, loaded through host instructions. `local-data/` stays with the source skill and isn't copied into Proma's skill package.
 
 <details>
-<summary>Custom locations and compatibility identifiers</summary>
+<summary>Custom data locations</summary>
 
 ```sh
 kitter library
@@ -124,8 +122,6 @@ kitter library --set /absolute/path/to/existing/library
 ```
 
 `KITTER_HOME` sets the application-data root. An incomplete metadata transaction blocks reopening until the saved recovery material is resolved.
-
-Bundle ID `dev.kitter.app`, the internal `Kitter` executable, Cargo package name and configuration format remain unchanged, so existing scripts and installation paths don't need rewriting for the new product name.
 
 </details>
 
@@ -144,4 +140,4 @@ The native desktop experience still needs testing on Windows, Linux and Intel Ma
 
 The foundation comes from [what1f/kitter](https://github.com/what1f/kitter); this repository's changes are recorded in its commit history. Please use [Pleat Issues](https://github.com/caaaptaintop/Pleat/issues) for questions and suggestions.
 
-Distributed under [Apache License 2.0](LICENSE), retaining upstream copyright and license notices. See [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for bundled material and [assets/brand](assets/brand/README.md) for the icon sources and export steps.
+Distributed under [Apache License 2.0](LICENSE), retaining upstream copyright and license notices. See [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for bundled material.

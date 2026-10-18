@@ -47,8 +47,6 @@ Kitter 已提供技能导入、统一技能库、按 Agent 安装和上下文估
 
 ![跨项目技能管理面板](assets/readme/pleat-management.png)
 
-以上截图来自 macOS 应用，使用隔离的示例数据。顶部为 ImageGen 效果图，详见 [图片来源](assets/readme/README.md)。
-
 ## 获取 Pleat
 
 目前尚未发布 Pleat 的 GitHub Release，可先从源码构建。需要 Rust 和 Git，桌面平台依赖见 [CI 配置](.github/workflows/ci.yml)。
@@ -115,7 +113,7 @@ kitter proma status --workspace workspace-slug --json
 本机适配可放在技能内的 `local-data/ADAPTATION.md`，由宿主指令加载。`local-data/` 随技能实体保留，不会复制进 Proma 的技能包。
 
 <details>
-<summary>自定义位置与兼容标识</summary>
+<summary>自定义数据位置</summary>
 
 ```sh
 kitter library
@@ -124,8 +122,6 @@ kitter library --set /absolute/path/to/existing/library
 ```
 
 `KITTER_HOME` 可指定应用数据根。未完成的元数据事务会阻止再次开库，需按保存的恢复材料处理。
-
-bundle ID `dev.kitter.app`、内部 `Kitter` 可执行文件、Cargo 包名和配置格式继续保留，现有脚本与安装入口无需因产品改名而批量改写。
 
 </details>
 
@@ -144,4 +140,4 @@ Windows、Linux 和 Intel Mac 的原生桌面体验仍需验证。各提交的�
 
 基础实现来自 [what1f/kitter](https://github.com/what1f/kitter)，本仓库的修改保存在提交历史中。问题和建议请提交到 [Pleat Issues](https://github.com/caaaptaintop/Pleat/issues)。
 
-沿用 [Apache License 2.0](LICENSE)，保留上游版权和许可证声明。第三方素材见 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)，图标源文件与导出方式见 [assets/brand](assets/brand/README.md)。
+沿用 [Apache License 2.0](LICENSE)，保留上游版权和许可证声明。第三方素材见 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)。
