@@ -12,66 +12,59 @@
   <img src="https://img.shields.io/badge/CLI-kitter-444444" alt="Compatible kitter CLI">
 </p>
 
-**Maintain skills in one place. Choose the right combination for each project.**
+Pleat is a skill manager based on [Kitter](https://github.com/what1f/kitter), with a desktop app and the `kitter` CLI. Maintain skill files in one library, see where they're installed, and check which Agents can discover them.
 
-Pleat is a desktop app and CLI based on [Kitter](https://github.com/what1f/kitter), built with Rust and GPUI. It brings skill sources, project installations, Agent discovery and estimated context cost into one place.
+## What's added to Kitter
 
-Maintained at [caaaptaintop/Pleat](https://github.com/caaaptaintop/Pleat), this fork extends Kitter with native project discovery, Proma workspace management, protection for local edits, operations across projects and guarded storage migration.
+Kitter provides skill imports, a central library, Agent-specific installation and context estimates. Pleat continues from `v0.1.10` with these additions:
 
-> Image notes: the hero is an ImageGen brand illustration based on the existing Pleat icon. The screenshots below show the actual macOS app with isolated demo data. Project names prefixed with “示例” mean “example”; they contain no real user projects.
+- Discover Codex local projects and native Proma workspaces, merge projects that point to the same directory, and archive, hide or restore entries in the project list.
+- Install and sync skill copies in Proma workspaces. Identify managed origins, external links and local variants. Install or remove user skills; enable or disable verified built-in presets.
+- Manage skills across several projects and Agents in one operation. Review target paths and the impact list before execution, then see which items failed.
+- Group project skills by source, improve name and description search, detect installed Agents, and keep the selected project and workspace when opening management controls.
+- Compare the source baseline, local files and incoming version before an update. Keep non-conflicting edits and stop on conflicts. Preserve each skill's `local-data/` and local adaptation notes.
+- Move a library, switch to an existing one, or migrate legacy Kitter data into the Pleat directory. Compatibility links let existing installations keep reaching the same files.
 
-## What changed from Kitter
+## Using the app
 
-This fork continues from Kitter `v0.1.10` (`e953940`). The upstream skill import, central library, project installation and Agent discovery features remain the foundation. Main additions in this repository:
+### Find where a skill is installed
 
-| Area | Pleat additions |
-| --- | --- |
-| Brand and entry points | Pleat name, folded icon, desktop window, About page and macOS package; retain the `kitter` CLI and application identifiers. |
-| Native projects | Read Codex local projects and native Proma workspaces; merge directory identities while retaining workspace associations, with archive, hide and restore views. |
-| Proma workspaces | Manage user skill copies per native workspace; distinguish managed copies, external links, app integrations and local variants. Install/remove user skills and enable/disable verified built-in presets. |
-| Operations across projects | Select multiple skills, Agents and projects from the library, project view or installation details; inspect the impact list before execution and see individual failures. |
-| Context and search | Distinguish installed Agents; search names with optional description matches; inspect source categories, automatic/manual skills and token estimates while retaining the current project and workspace. |
-| Updates and local adaptations | Compare the recorded source baseline, local files and new source. Preserve non-conflicting edits and stop on conflicts. Protect `local-data/` and support a separate `local-data/ADAPTATION.md`. |
-| Storage and compatibility | Use Pleat data directories for new installations. Preview library moves, existing-library switches and legacy Kitter data-root moves; keep compatibility links and validate directory identities and transaction state. |
+Add skills from local folders, GitHub, skills.sh-compatible sources or Claude plugin sources, or adopt existing installations. Select a skill to see the projects and Agents using it.
 
-## See the app
+![Skill library and installation details](assets/readme/pleat-library.png)
 
-### One library, every installation
+### Check a project's skills
 
-Add skills from local folders, GitHub, skills.sh-compatible sources or Claude plugin sources, or inspect and adopt existing installations. Organize skills into groups and inspect their source, content and project installations.
+The project view separates project installations, inherited global skills and plugins, with their sources. Codex and Proma can share a project while keeping their own installation paths and workspaces.
 
-![Pleat library and installation details with isolated demo data](assets/readme/pleat-library.png)
+![Project, Agents and skill sources](assets/readme/pleat-project.png)
 
-### Projects and native workspaces
+Skill counts and tokens come from directory scans and static estimates. They don't show what an Agent actually loaded or spent in a particular turn.
 
-The project view separates direct installations, inherited sources, global skills and plugins. Codex and Proma can share a project while retaining their own installation paths and native workspaces.
+### Manage several projects
 
-![Pleat project and Agent overview with isolated demo data](assets/readme/pleat-project.png)
+Choose skills, Agents and target projects, then preview the scope. Ordinary Agent installations use managed links. Proma uses workspace copies, which need syncing after their sources change.
 
-Context numbers come from directory scans and static estimates. They describe discovered skills, not what an Agent actually loaded in a particular turn or its actual token usage. Proma installation checks are separate from runtime-loading verification.
+![Management panel for multiple projects](assets/readme/pleat-management.png)
 
-### Inspect the scope before a batch operation
+These screenshots show the macOS app with isolated demo data. The top image was made with ImageGen. See [image provenance](assets/readme/README.md).
 
-Choose skills, Agents and native Proma workspaces, then review the target paths and operations. Ordinary Agent installations use managed links; Proma uses workspace copies with recorded origins that require an explicit sync to update.
+## Get Pleat
 
-![Pleat management panel with isolated demo data](assets/readme/pleat-management.png)
-
-## Build and use
-
-**No Pleat GitHub Release has been published in this repository yet.** Build from source for now. [Upstream Kitter Releases](https://github.com/what1f/kitter/releases) distribute Kitter, not this Pleat fork.
+No Pleat GitHub Release has been published yet. You can build from source with Rust and Git; see the [CI configuration](.github/workflows/ci.yml) for desktop platform dependencies.
 
 ```sh
 git clone https://github.com/caaaptaintop/Pleat.git
 cd Pleat
 
-# Core and CLI
+# Build the CLI
 cargo build --release --locked --bin kitter
 
 # Run the desktop app
 cargo run --release --locked --features desktop --bin kitter-desktop
 ```
 
-The build requires Rust and Git; see the [CI configuration](.github/workflows/ci.yml) for desktop platform dependencies. Packaging on macOS also requires `just` and the system command-line tools:
+On macOS, use `just` and the system command-line tools to produce the app and DMG:
 
 ```sh
 just package
@@ -79,42 +72,50 @@ just package
 # target/release/Pleat-<version>-macos-<arch>.dmg
 ```
 
-The local macOS packaging script uses ad hoc signing. Apple Developer ID signing and notarization are not provided.
+The current macOS build is ad hoc signed and hasn't been notarized by Apple. Gatekeeper may block its first launch. If you trust the package's source, follow [Apple's instructions](https://support.apple.com/en-us/102445): after trying to open it, go to **System Settings → Privacy & Security → Open Anyway**.
 
-The CLI is still named `kitter`. These examples assume the built `target/release/kitter` is on your `PATH`:
+## CLI
+
+The command is still named `kitter`. Put the built `target/release/kitter` on your `PATH` to inspect skills and projects:
 
 ```sh
 kitter list
 kitter projects --json
-kitter add npx https://github.com/owner/repository --skill skill-a
-kitter install skill-a --project /path/to/project --target codex
-kitter project /path/to/project --agent codex
-kitter check
-kitter update skill-a
+kitter project /path/to/project
 ```
 
-Use `--target universal` for the shared `.agents/skills` location. Provider-specific targets follow each Agent's directory rules. Proma operations are scoped to registered native workspaces:
+Replace `skill-name` and the project path with your own values when installing or updating:
+
+```sh
+kitter install skill-name --project /path/to/project --target codex
+kitter update skill-name
+```
+
+Use `--target universal` for the shared `.agents/skills` directory. Proma operations use registered native workspaces:
 
 ```sh
 kitter proma workspaces --json
-kitter proma status --workspace <workspace-slug> --json
+kitter proma status --workspace workspace-slug --json
 ```
 
-See `kitter --help`, `kitter project --help` and `kitter proma --help` for more options. The bundled Agent skill remains [`kitter`](resources/skills/kitter).
+Run `kitter --help` for more options. The bundled Agent skill is still [`kitter`](resources/skills/kitter).
 
-## Data locations and legacy compatibility
+## Data and compatibility
 
 Default skill libraries for new installations:
 
-| Platform | Default location |
+| Platform | Location |
 | --- | --- |
 | macOS | `~/Library/Application Support/Pleat/skills` |
 | Windows | `%LOCALAPPDATA%\Pleat\skills` |
 | Linux | `$XDG_DATA_HOME/Pleat/skills` or `~/.local/share/Pleat/skills` |
 
-Existing Kitter data stays in place until an explicit migration. Open **Settings → Advanced storage settings** to preview a move, move the current library or use an existing library. Moves retain old-path compatibility links so existing installations and local environments can still reach the same data.
+Existing Kitter data stays in place until you migrate it under **Settings → Advanced storage settings**. Migration keeps old-path compatibility links. Cross-volume moves, conflicting targets and directory-identity mismatches stop the operation.
 
-Migration refuses cross-volume moves, conflicting data, nested directories and mismatched identities. An incomplete metadata transaction blocks reopening until the saved recovery material is resolved; it is not overwritten automatically. `local-data/` remains with its source skill and is not copied into Proma as public skill code.
+Local adaptations can live in a skill's `local-data/ADAPTATION.md`, loaded through host instructions. `local-data/` stays with the source skill and isn't copied into Proma's skill package.
+
+<details>
+<summary>Custom locations and compatibility identifiers</summary>
 
 ```sh
 kitter library
@@ -122,23 +123,25 @@ kitter library
 kitter library --set /absolute/path/to/existing/library
 ```
 
-`KITTER_HOME` remains an explicit application-data override. Bundle ID `dev.kitter.app`, the internal `Kitter` executable, Cargo package name, configuration format and compatibility variable names remain unchanged. Renaming the product and repository does not require rewriting skill content or host configuration.
+`KITTER_HOME` sets the application-data root. An incomplete metadata transaction blocks reopening until the saved recovery material is resolved.
 
-## Platform and verification scope
+Bundle ID `dev.kitter.app`, the internal `Kitter` executable, Cargo package name and configuration format remain unchanged, so existing scripts and installation paths don't need rewriting for the new product name.
 
-| Platform | Existing evidence |
+</details>
+
+## Platform status
+
+| Platform | Verification |
 | --- | --- |
-| macOS ARM64 | Local desktop, CLI, packaging and isolated demo operations verified; screenshots in this README are from this platform. |
+| macOS ARM64 | Desktop app, CLI, packaging and isolated demo operations verified locally. |
 | macOS Intel | Core tests and desktop compilation checked in CI. |
 | Windows x64 | Core tests and desktop compilation checked in CI. |
 | Linux x64 | Core tests and desktop compilation checked in CI. |
 
-CI does not replace native desktop-experience testing on Windows, Linux or Intel Mac. Check [GitHub Actions](https://github.com/caaaptaintop/Pleat/actions) for the status of a specific commit.
+The native desktop experience still needs testing on Windows, Linux and Intel Mac. See [GitHub Actions](https://github.com/caaaptaintop/Pleat/actions) for checks on a specific commit.
 
-## Upstream, contributing and license
+## Upstream and license
 
-Pleat is based on [what1f/kitter](https://github.com/what1f/kitter). Thanks to the upstream authors and contributors for the foundation. Pleat changes are recorded in this repository's commit history; they are not an upstream release or endorsement.
+The foundation comes from [what1f/kitter](https://github.com/what1f/kitter); this repository's changes are recorded in its commit history. Please use [Pleat Issues](https://github.com/caaaptaintop/Pleat/issues) for questions and suggestions.
 
-Please use [Pleat Issues](https://github.com/caaaptaintop/Pleat/issues) for this fork.
-
-Distributed under [Apache License 2.0](LICENSE), retaining upstream copyright and license notices. See [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for bundled material, [brand assets](assets/brand/README.md) for icon sources and [README image provenance](assets/readme/README.md) for the visuals.
+Distributed under [Apache License 2.0](LICENSE), retaining upstream copyright and license notices. See [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for bundled material and [assets/brand](assets/brand/README.md) for the icon sources and export steps.
