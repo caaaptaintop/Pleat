@@ -1283,6 +1283,10 @@ impl SkillLibrary {
             .context("技能不存在")
     }
 
+    pub(crate) fn has_record_by_storage(&self, storage_name: &str) -> bool {
+        self.registry.skills.contains_key(storage_name)
+    }
+
     pub fn set_update_available(&mut self, name: &str, available: bool) -> Result<()> {
         let record = self.record(name)?;
         self.set_update_available_by_storage(&record.storage_name, available)
