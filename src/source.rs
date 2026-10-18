@@ -455,7 +455,8 @@ pub fn check_updates_with_progress(
         .list()?
         .into_iter()
         .filter(|skill| {
-            !skill.record.origin.is_builtin()
+            library.has_record_by_storage(&skill.record.storage_name)
+                && !skill.record.origin.is_builtin()
                 && !library.is_linked_source(&skill.record.storage_name)
         })
         .map(|skill| skill.record)
@@ -1126,6 +1127,27 @@ printf 'call\n' >> "$KITTER_IMPORT_FIXTURE/calls"
             }
         );
         assert!(library.groups().is_empty());
+    }
+
+    #[test]
+    fn check_updates_ignores_unregistered_local_entity() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut library = SkillLibrary::open_in(temp.path().join("data")).unwrap();
+        let source = library.config.library_dir.join("local-entity");
+        write_skill(&source, "local-entity");
+        scan_local(&source)
+            .unwrap()
+            .import_selected(
+                &mut library,
+                &HashSet::from(["local-entity".to_string()]),
+                None,
+            )
+            .unwrap();
+        let mut reports = Vec::new();
+        let count =
+            check_updates_with_progress(&mut library, |progress| reports.push(progress)).unwrap();
+        assert_eq!(count, 0);
+        assert_eq!(reports.last().map(|progress| progress.total), Some(0));
     }
 
     #[test]
