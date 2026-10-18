@@ -55,7 +55,18 @@ Choose skills, Agents and target projects, then preview the scope. Ordinary Agen
 2. Open the DMG and drag **Pleat** into **Applications**.
 3. Open Pleat from Applications.
 
-The installer is ad hoc signed and has not been notarized by Apple. If Gatekeeper blocks the first launch and you trust the source, follow [Apple's instructions](https://support.apple.com/en-us/102445): try opening the app, then go to **System Settings → Privacy & Security → Open Anyway**.
+The installer is ad hoc signed and has not been notarized by Apple.
+
+#### If macOS blocks the first launch
+
+After confirming that the installer came from this repository's Releases:
+
+1. Double-click **Pleat** in Applications. If macOS says it cannot verify the developer or check the app for malicious software, click **Done** or **OK** to dismiss the alert.
+2. Open the ** menu → System Settings → Privacy & Security**.
+3. Scroll down to **Security**, find the message that Pleat was blocked, and click **Open Anyway**. On some macOS versions, click **Open** first, then **Open Anyway**.
+4. If prompted, enter your **Mac login password** to authenticate. Confirm with **Open** or **OK** in the dialog that follows.
+
+You can then open Pleat directly from Applications. If **Open Anyway** is missing, double-click Pleat again to trigger the alert, then return to Privacy & Security.
 
 ### Build from source
 
