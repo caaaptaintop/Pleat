@@ -1,167 +1,162 @@
 # Pleat
 
-<img src="./assets/app-icon.png" width="128" height="128" alt="Pleat">
-
-Pleat is a skill management app based on [Kitter](https://github.com/what1f/kitter), maintained in `caaaptaintop/AI-Cube`. The desktop display name and icon are Pleat; the `kitter` CLI, application identity and existing data paths remain compatible.
-
-See [brand assets and reproducible exports](assets/brand/README.md). Build the local macOS candidate with `just package`; this brand candidate has not been publicly released. The upstream Kitter documentation and download links below are retained for reference.
-
-## Upstream Kitter documentation
-
 <p align="center">
-  <img src="./assets/readme/hero.en.png" width="100%" alt="Kitter — one skill library where every project gets only what it needs">
+  <img src="assets/readme/pleat-hero.png" width="100%" alt="Pleat — an Agent skill manager based on Kitter">
 </p>
 
-<p align="center">
-  <a href="./README.zh-CN.md">简体中文</a>
-</p>
+<p align="center"><strong>English</strong> · <a href="README.zh-CN.md">简体中文</a></p>
 
 <p align="center">
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-3f8997" alt="Apache-2.0 license"></a>
-  <img src="https://img.shields.io/badge/desktop-macOS%20%7C%20Windows%20%7C%20Linux-15191a" alt="macOS, Windows, and Linux desktop app">
-  <img src="https://img.shields.io/badge/built_with-Rust-b8aaa0" alt="Built with Rust">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-444444" alt="Apache-2.0"></a>
+  <img src="https://img.shields.io/badge/UI-Rust%20%2B%20GPUI-6C5CE7" alt="Rust and GPUI">
+  <img src="https://img.shields.io/badge/CLI-kitter-444444" alt="Compatible kitter CLI">
 </p>
 
-<p align="center"><strong>One skill library. Every project gets only what it needs.</strong></p>
+Pleat is a skill manager based on [Kitter](https://github.com/what1f/kitter), with a desktop app and the `kitter` CLI. Maintain skill files in one library, see where they're installed, and check which Agents can discover them.
 
-Kitter is a desktop app and CLI for managing Agent Skills across projects. Keep your skills in one library, install the right combination for each project, and update them in one place.
+## What's added to Kitter
 
-Built entirely in Rust with GPUI, Kitter pairs a straightforward interface with a small footprint and smooth native performance.
+Kitter provides skill imports, a central library, Agent-specific installation and context estimates. Pleat continues from `v0.1.10` with these additions:
 
-<p align="center">
-  <img src="./assets/readme/skill-workflow.png" width="100%" alt="Kitter maintains one skill library and links selected skills to projects and user-level installations">
-</p>
+- Discover Codex local projects and native Proma workspaces, merge projects that point to the same directory, and archive, hide or restore entries in the project list.
+- Install and sync skill copies in Proma workspaces. Identify managed origins, external links and local variants. Install or remove user skills; enable or disable verified built-in presets.
+- Manage skills across several projects and Agents in one operation. Review target paths and the impact list before execution, then see which items failed.
+- Group project skills by source, improve name and description search, detect installed Agents, and keep the selected project and workspace when opening management controls.
+- Compare the source baseline, local files and incoming version before an update. Keep non-conflicting edits and stop on conflicts. Preserve each skill's `local-data/` and local adaptation notes.
+- Move a library, switch to an existing one, or migrate legacy Kitter data into the Pleat directory. Compatibility links let existing installations keep reaching the same files.
 
-## Why Kitter
+## Using the app
 
-Working across projects often means maintaining several copies of the same skill and keeping track of what each agent can use. Kitter keeps those connections visible:
+### Find where a skill is installed
 
-- **Maintain once** — projects link to the same skill source, so one update reaches every linked installation.
-- **Choose per project** — give each project its own skill set, with user-level installation for skills you use everywhere.
-- **See what is active** — inspect the skills each agent discovers, including installations outside Kitter, along with their sources and estimated context cost.
+Add skills from local folders, GitHub, skills.sh-compatible sources or Claude plugin sources, or adopt existing installations. Select a skill to see the projects and Agents using it.
 
-## Install Kitter
+![Skill library and installation details](assets/readme/pleat-library.png)
 
-Download the app for your platform from [GitHub Releases](https://github.com/what1f/kitter/releases/latest).
+### Check a project's skills
 
-- **macOS (Apple Silicon / Intel)** — choose the `macos-arm64.dmg` (Apple Silicon) or `macos-x86_64.dmg` (Intel) download, open the `.dmg` and drag `Kitter.app` into `Applications`.
-- **Windows (x64)** — download `Kitter-<version>-desktop-windows-x86_64.exe` and run it directly.
-- **Linux (x64)** — extract `Kitter-<version>-desktop-linux-x86_64.tar.gz` and run `./Kitter` from the extracted `Kitter` directory.
+The project view separates project installations, inherited global skills and plugins, with their sources. Codex and Proma can share a project while keeping their own installation paths and workspaces.
 
-Kitter is not yet signed with an Apple Developer ID. If macOS blocks the first launch, confirm that you downloaded it from the official release, then go to **System Settings → Privacy & Security → Open Anyway** and follow the prompts. See [Apple’s instructions](https://support.apple.com/102445).
+![Project, Agents and skill sources](assets/readme/pleat-project.png)
 
-You can also run the following command, then open Kitter again:
+Skill counts and tokens come from directory scans and static estimates. They don't show what an Agent actually loaded or spent in a particular turn.
 
-```bash
-xattr -dr com.apple.quarantine /Applications/Kitter.app
-```
+### Manage several projects
 
-The desktop app and CLI are separate release artifacts built on the same core. Standalone CLI packages for macOS, Windows, and Linux are available from [GitHub Releases](https://github.com/what1f/kitter/releases/latest). The built-in Kitter skill resolves that standalone CLI and guides you through downloading it when needed.
+Choose skills, Agents and target projects, then preview the scope. Ordinary Agent installations use managed links. Proma uses workspace copies, which need syncing after their sources change.
 
-## Manage your skills with Kitter
+![Management panel for multiple projects](assets/readme/pleat-management.png)
 
-### 1. Build one library
+## Get Pleat
 
-Use **+** to add skills from a local folder, GitHub or a skills.sh-compatible source, or a Claude plugin source. If skills are already scattered across projects, choose **Existing installations** to inspect and adopt them without moving their source directories.
+### macOS installer
 
-Kitter keeps one maintained source for each skill. Open its **Installs** tab to immediately see every project using it, every installation location, and the agents that can discover it.
+1. Download `Pleat-0.1.10-macos-arm64.dmg` from [GitHub Releases](https://github.com/caaaptaintop/Pleat/releases/tag/v0.1.10-pleat.1) for an Apple Silicon Mac.
+2. Open the DMG and drag **Pleat** into **Applications**.
+3. Open Pleat from Applications.
 
-<p align="center">
-  <img src="./assets/readme/skill-library.en.png" width="100%" alt="Kitter skill library showing one managed skill installed across several projects">
-</p>
+The installer is ad hoc signed and has not been notarized by Apple.
 
-### 2. Install only where needed
+#### If macOS blocks the first launch
 
-Select a skill, choose a project, then install it into the shared `.agents/skills` directory or an agent-specific directory. Kitter creates managed links instead of independent copies, so projects can use different combinations without creating update drift.
+After confirming that the installer came from this repository's Releases:
 
-DimAgent uses the shared install option. For Oh My Pi (omp), choose the shared option or its own `.omp/skills` target (`--target omp` in the CLI). User-level omp installs use `~/.omp/agent/skills` by default.
+1. Double-click **Pleat** in Applications. If macOS says it cannot verify the developer or check the app for malicious software, click **Done** or **OK** to dismiss the alert.
+2. Open the ** menu → System Settings → Privacy & Security**.
+3. Scroll down to **Security**, find the message that Pleat was blocked, and click **Open Anyway**. On some macOS versions, click **Open** first, then **Open Anyway**.
+4. If prompted, enter your **Mac login password** to authenticate. Confirm with **Open** or **OK** in the dialog that follows.
 
-<p align="center">
-  <img src="./assets/readme/install-skill.en.png" width="100%" alt="Kitter installation dialog for selecting a project and agent targets">
-</p>
+You can then open Pleat directly from Applications. If **Open Anyway** is missing, double-click Pleat again to trigger the alert, then return to Privacy & Security.
 
-Skills you use across all projects can also be installed at the user level.
+### Build from source
 
-### 3. Verify what is actually active
+You need Rust and Git. See the [CI configuration](.github/workflows/ci.yml) for desktop platform dependencies.
 
-Open **Projects** to see the complete effective skill set for every agent—not just installations managed by Kitter. The view discovers project, parent, user-level, built-in, and plugin-provided capabilities, then shows where each one came from.
+```sh
+git clone https://github.com/caaaptaintop/Pleat.git
+cd Pleat
 
-The per-agent token estimate helps you spot skills that add unnecessary context overhead.
+# Build the CLI
+cargo build --release --locked --bin kitter
 
-<p align="center">
-  <img src="./assets/readme/project-effective-skills.en.png" width="100%" alt="Kitter project view showing managed and unmanaged effective skills, plugins, agents, and estimated context cost">
-</p>
-
-### 4. Update once
-
-Run **Check for updates** from the desktop app or use `kitter check` and `kitter update`. Every managed project continues to use the same maintained source.
-
-The equivalent CLI workflow is intentionally small:
-
-```bash
-kitter add npx https://github.com/owner/repository --skill skill-a
-kitter install skill-a --project /path/to/project --target universal
-kitter project /path/to/project
-kitter update skill-a
-```
-
-## Standalone CLI and agent skill
-
-You do not need the desktop app to use Kitter. Download the standalone CLI from [GitHub Releases](https://github.com/what1f/kitter/releases/latest), put `kitter` on your `PATH`, and install the [`$kitter` skill](./resources/skills/kitter) directly:
-
-```bash
-npx skills add what1f/kitter --skill kitter
-```
-
-The skill lets an agent inspect the current machine, add or adopt skill sources, install the right project combination, and verify the result through the standalone `kitter` CLI. If the CLI is missing, the skill can guide you through downloading it from an official Release.
-
-<details>
-<summary><strong>Build from source</strong></summary>
-
-```bash
-git clone https://github.com/what1f/kitter.git
-cd kitter
+# Run the desktop app
 cargo run --release --locked --features desktop --bin kitter-desktop
 ```
 
-</details>
+On macOS, use `just` and the system command-line tools to produce the app and DMG:
 
-## Platform status
+```sh
+just package
+# target/release/Pleat.app
+# target/release/Pleat-<version>-macos-<arch>.dmg
+```
 
-- **macOS (Apple Silicon / Intel)** — desktop application and standalone CLI.
-- **Windows (x64)** — desktop application and standalone CLI, tested on Windows with platform-specific startup and performance fixes.
-- **Linux (x64)** — standalone CLI and desktop build available; the desktop app still needs validation on real systems.
+## CLI
 
-## Local data
+The command is still named `kitter`. Put the built `target/release/kitter` on your `PATH` to inspect skills and projects:
 
-Pleat stores configuration and source records in the operating system's application-data directory. New installations use these default skill libraries:
+```sh
+kitter list
+kitter projects --json
+kitter project /path/to/project
+```
 
-| Platform | Default skill library |
+Replace `skill-name` and the project path with your own values when installing or updating:
+
+```sh
+kitter install skill-name --project /path/to/project --target codex
+kitter update skill-name
+```
+
+Use `--target universal` for the shared `.agents/skills` directory. Proma operations use registered native workspaces:
+
+```sh
+kitter proma workspaces --json
+kitter proma status --workspace workspace-slug --json
+```
+
+Run `kitter --help` for more options. The bundled Agent skill is still [`kitter`](resources/skills/kitter).
+
+## Data and compatibility
+
+Default skill libraries for new installations:
+
+| Platform | Location |
 | --- | --- |
 | macOS | `~/Library/Application Support/Pleat/skills` |
 | Windows | `%LOCALAPPDATA%\Pleat\skills` |
 | Linux | `$XDG_DATA_HOME/Pleat/skills` or `~/.local/share/Pleat/skills` |
 
-Existing Kitter data stays in place until an explicit migration. In Settings → Advanced storage settings, preview moving the library, using an existing library, or moving the Kitter data root to its sibling Pleat folder. Moves retain an old-path compatibility link for installed skills and local runtimes; cross-volume moves and occupied targets are refused. An interrupted metadata transaction blocks reopening until its saved recovery material is resolved.
+Existing Kitter data stays in place until you migrate it under **Settings → Advanced storage settings**. Migration keeps old-path compatibility links. Cross-volume moves, conflicting targets and directory-identity mismatches stop the operation.
 
-`kitter library` shows the current library; `kitter library --set /absolute/path` switches to an existing nonempty library using the same transaction checks. To move into an empty folder, use the desktop's “Move current library” action. `KITTER_HOME` remains an explicit application-data override.
+Local adaptations can live in a skill's `local-data/ADAPTATION.md`, loaded through host instructions. `local-data/` stays with the source skill and isn't copied into Proma's skill package.
 
-## Contributing
+<details>
+<summary>Custom data locations</summary>
 
-Issues and pull requests are welcome. Please open an [issue](https://github.com/what1f/kitter/issues) before starting a large behavioral or UI change so the scope can be aligned first.
+```sh
+kitter library
+# Switch to an existing nonempty library; use the desktop action to move into an empty folder.
+kitter library --set /absolute/path/to/existing/library
+```
 
-If Kitter makes your skill setup calmer, consider [starring the repository](https://github.com/what1f/kitter). It helps more multi-project developers find it.
+`KITTER_HOME` sets the application-data root. An incomplete metadata transaction blocks reopening until the saved recovery material is resolved.
 
-## License
+</details>
 
-Kitter is available under the [Apache License 2.0](./LICENSE). Licenses for bundled fonts, icons, and other third-party material are listed in [THIRD_PARTY_LICENSES.md](./THIRD_PARTY_LICENSES.md).
+## Platform status
 
-## Star History
+| Platform | Verification |
+| --- | --- |
+| macOS ARM64 | Desktop app, CLI, packaging and isolated demo operations verified locally. |
+| macOS Intel | Core tests and desktop compilation checked in CI. |
+| Windows x64 | Core tests and desktop compilation checked in CI. |
+| Linux x64 | Core tests and desktop compilation checked in CI. |
 
-<a href="https://www.star-history.com/?repos=what1f%2Fkitter&type=date">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=what1f/kitter&type=date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=what1f/kitter&type=date" />
-    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=what1f/kitter&type=date" />
-  </picture>
-</a>
+The native desktop experience still needs testing on Windows, Linux and Intel Mac. See [GitHub Actions](https://github.com/caaaptaintop/Pleat/actions) for checks on a specific commit.
+
+## Upstream and license
+
+The foundation comes from [what1f/kitter](https://github.com/what1f/kitter); this repository's changes are recorded in its commit history. Please use [Pleat Issues](https://github.com/caaaptaintop/Pleat/issues) for questions and suggestions.
+
+Distributed under [Apache License 2.0](LICENSE), retaining upstream copyright and license notices. See [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for bundled material.
