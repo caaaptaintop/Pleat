@@ -49,7 +49,17 @@ Choose skills, Agents and target projects, then preview the scope. Ordinary Agen
 
 ## Get Pleat
 
-No Pleat GitHub Release has been published yet. You can build from source with Rust and Git; see the [CI configuration](.github/workflows/ci.yml) for desktop platform dependencies.
+### macOS installer
+
+1. Download `Pleat-0.1.10-macos-arm64.dmg` from [GitHub Releases](https://github.com/caaaptaintop/Pleat/releases/tag/v0.1.10-pleat.1) for an Apple Silicon Mac.
+2. Open the DMG and drag **Pleat** into **Applications**.
+3. Open Pleat from Applications.
+
+The installer is ad hoc signed and has not been notarized by Apple. If Gatekeeper blocks the first launch and you trust the source, follow [Apple's instructions](https://support.apple.com/en-us/102445): try opening the app, then go to **System Settings → Privacy & Security → Open Anyway**.
+
+### Build from source
+
+You need Rust and Git. See the [CI configuration](.github/workflows/ci.yml) for desktop platform dependencies.
 
 ```sh
 git clone https://github.com/caaaptaintop/Pleat.git
@@ -69,8 +79,6 @@ just package
 # target/release/Pleat.app
 # target/release/Pleat-<version>-macos-<arch>.dmg
 ```
-
-The current macOS build is ad hoc signed and hasn't been notarized by Apple. Gatekeeper may block its first launch. If you trust the package's source, follow [Apple's instructions](https://support.apple.com/en-us/102445): after trying to open it, go to **System Settings → Privacy & Security → Open Anyway**.
 
 ## CLI
 

@@ -49,7 +49,17 @@ Kitter 已提供技能导入、统一技能库、按 Agent 安装和上下文估
 
 ## 获取 Pleat
 
-目前尚未发布 Pleat 的 GitHub Release，可先从源码构建。需要 Rust 和 Git，桌面平台依赖见 [CI 配置](.github/workflows/ci.yml)。
+### macOS 安装包
+
+1. 从 [GitHub Releases](https://github.com/caaaptaintop/Pleat/releases/tag/v0.1.10-pleat.1) 下载 `Pleat-0.1.10-macos-arm64.dmg`，适用于 Apple Silicon Mac。
+2. 打开 DMG，将 **Pleat** 拖入“应用程序”。
+3. 从“应用程序”打开 Pleat。
+
+安装包采用 ad hoc 签名，未经 Apple 公证。若首次打开被 Gatekeeper 拦截，确认来源可信后，按 [Apple 官方指引](https://support.apple.com/zh-cn/102445)，先尝试打开，再前往“系统设置 → 隐私与安全 → 仍要打开”。
+
+### 从源码构建
+
+需要 Rust 和 Git，桌面平台依赖见 [CI 配置](.github/workflows/ci.yml)。
 
 ```sh
 git clone https://github.com/caaaptaintop/Pleat.git
@@ -69,8 +79,6 @@ just package
 # target/release/Pleat.app
 # target/release/Pleat-<version>-macos-<arch>.dmg
 ```
-
-当前 macOS 构建使用 ad hoc 签名，未经 Apple 公证，首次打开可能被 Gatekeeper 拦截。确认安装包来源可信后，可按 [Apple 官方指引](https://support.apple.com/zh-cn/102445)，在尝试打开后前往“系统设置 → 隐私与安全 → 仍要打开”。
 
 ## CLI
 
