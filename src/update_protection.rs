@@ -133,6 +133,13 @@ fn merge(base: &Manifest, current: &Manifest, incoming: &Manifest) -> Result<Man
             new
         } else if new == old || local == new {
             local
+        } else if matches!((local, new),
+            (Some(Node::File { sha256: a, mode: x }), Some(Node::File { sha256: b, mode: y }))
+                if a == b && (x & 0o111 != 0) == (y & 0o111 != 0))
+        {
+            // Git does not retain private read/write bits (e.g. 0600 vs 0644).
+            // Identical content and execution intent can keep local permissions.
+            local
         } else {
             conflicts.push(path.clone());
             continue;
@@ -256,6 +263,80 @@ pub(crate) fn verify_unchanged(root: &Path, expected: &Manifest) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    #[test]
+    fn identical_new_file_keeps_private_local_permissions() {
+        let local = entries(&[(
+            "new.py",
+            Node::File {
+                sha256: "same".into(),
+                mode: 0o600,
+            },
+        )]);
+        let incoming = entries(&[("new.py", file("same"))]);
+        assert_eq!(merge(&Manifest::new(), &local, &incoming).unwrap(), local);
+    }
+
+    #[test]
+    fn permission_compatibility_does_not_hide_content_or_execution_conflicts() {
+        let local = entries(&[(
+            "new.py",
+            Node::File {
+                sha256: "local".into(),
+                mode: 0o600,
+            },
+        )]);
+        assert!(
+            merge(
+                &Manifest::new(),
+                &local,
+                &entries(&[("new.py", file("remote"))])
+            )
+            .is_err()
+        );
+        let executable = entries(&[(
+            "new.py",
+            Node::File {
+                sha256: "local".into(),
+                mode: 0o755,
+            },
+        )]);
+        assert!(merge(&Manifest::new(), &local, &executable).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_local_file_is_retained_while_baseline_describes_source() {
+        let current = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        fs::write(current.path().join("SKILL.md"), "entry").unwrap();
+        fs::write(staging.path().join("SKILL.md"), "entry").unwrap();
+        let base = snapshot(current.path()).unwrap();
+        fs::write(current.path().join("new.py"), "same").unwrap();
+        fs::set_permissions(
+            current.path().join("new.py"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        fs::write(staging.path().join("new.py"), "same").unwrap();
+        fs::set_permissions(
+            staging.path().join("new.py"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        let local = snapshot(current.path()).unwrap();
+        let source = snapshot(staging.path()).unwrap();
+        let baseline = prepare(current.path(), staging.path(), &base, &local).unwrap();
+        assert_eq!(baseline, source);
+        assert_eq!(snapshot(staging.path()).unwrap(), local);
+        fs::set_permissions(
+            current.path().join("new.py"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        assert!(verify_unchanged(current.path(), &local).is_err());
+    }
     fn file(value: &str) -> Node {
         Node::File {
             sha256: value.into(),
@@ -278,7 +359,10 @@ mod tests {
         let base = snapshot(current.path()).unwrap();
         let incoming = prepare(current.path(), staging.path(), &base, &base).unwrap();
         assert!(incoming.contains_key("skill.md"));
-        assert_eq!(fs::read(staging.path().join("skill.md")).unwrap(), b"updated");
+        assert_eq!(
+            fs::read(staging.path().join("skill.md")).unwrap(),
+            b"updated"
+        );
     }
 
     #[test]
