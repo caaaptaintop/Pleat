@@ -142,7 +142,7 @@ SOFTWARE.
 
 ## WorkBuddy brand icon
 
-`assets/icons/provider-workbuddy.svg` uses the official favicon linked by the WorkBuddy website. Its artwork and colors are preserved; only asset metadata is added.
+`assets/icons/provider-workbuddy.svg` uses the official favicon linked by the WorkBuddy website. Its geometry and official sRGB fallback colors are preserved. Unsupported Display-P3 CSS declarations are omitted for renderer compatibility, and asset metadata is added.
 
 Website: https://www.workbuddy.cn/
 
