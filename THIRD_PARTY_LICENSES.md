@@ -140,6 +140,16 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## WorkBuddy brand icon
+
+`assets/icons/provider-workbuddy.svg` uses the official favicon linked by the WorkBuddy website. Its artwork and colors are preserved; only asset metadata is added.
+
+Website: https://www.workbuddy.cn/
+
+Asset: https://assets.workbuddy.cn/web/workbuddy/a5b2fb510f0e7b156f19d072fae0cd12ae1f2f19/assets/logo.svg
+
+The WorkBuddy name and brand mark belong to Tencent and are used to identify the compatible application.
+
 ## Lucide
 
 Confirmed source files:

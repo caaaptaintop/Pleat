@@ -73,6 +73,7 @@ impl KitterApp {
                 | "icons/provider-trae.svg"
                 | "icons/provider-omp.svg"
                 | "icons/provider-dimagent.svg"
+                | "icons/provider-workbuddy.svg"
         )
     }
 
@@ -86,6 +87,7 @@ impl KitterApp {
             "icons/provider-trae.svg" => &TRAE_COLOR_IMAGE,
             "icons/provider-omp.svg" => &OMP_COLOR_IMAGE,
             "icons/provider-dimagent.svg" => &DIMAGENT_COLOR_IMAGE,
+            "icons/provider-workbuddy.svg" => &WORKBUDDY_COLOR_IMAGE,
             _ => unreachable!("color_brand_icon called for a monochrome icon"),
         };
         img(ImageSource::Custom(Arc::new(move |_, cx| {
