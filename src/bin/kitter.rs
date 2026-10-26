@@ -165,6 +165,12 @@ enum Command {
 
 #[derive(Subcommand)]
 enum PromaAction {
+    /// Preview built-in following across all workspaces; apply only a reviewed plan
+    BuiltinFollow {
+        /// Apply this exact preview and enable continued built-in following
+        #[arg(long, value_name = "PLAN_JSON")]
+        apply: Option<PathBuf>,
+    },
     /// List registered native workspaces without initializing them
     Workspaces {
         #[arg(long)]
@@ -1437,6 +1443,36 @@ fn manage_proma(action: PromaAction) -> Result<()> {
     };
     let library = snapshot.as_ref().map(|(library, _)| library);
     match action {
+        PromaAction::BuiltinFollow { apply } => {
+            let bundled = proma::builtin_sync::bundled_dir()
+                .context("此平台尚未支持 Proma 内置技能跟随")?;
+            let state_dir = kitter::config::app_data_dir().join("proma-builtin-follow");
+            if let Some(path) = apply {
+                use std::io::Read;
+                let mut bytes = Vec::new();
+                std::fs::File::open(&path)?.take(16 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
+                if bytes.len() > 16 * 1024 * 1024 {
+                    bail!("内置跟随计划过大");
+                }
+                let plan: proma::builtin_sync::FollowPlan = serde_json::from_slice(&bytes)
+                    .map_err(|_| anyhow::anyhow!("内置跟随计划格式无效"))?;
+                let report = proma::builtin_sync::apply(&root, &bundled, &state_dir, &plan)?;
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "operation": "apply_reviewed_builtin_follow_plan",
+                    "updated": report.updated,
+                    "inactive_updated": report.inactive_updated,
+                    "catalog_changed": report.catalog_changed,
+                    "warnings": report.warnings,
+                }))?);
+                if !report.warnings.is_empty() {
+                    bail!("部分内置技能仍需处理，详见 warnings");
+                }
+            } else {
+                let plan = proma::builtin_sync::preview(&root, &bundled, &state_dir)?;
+                println!("{}", serde_json::to_string_pretty(&plan)?);
+            }
+            Ok(())
+        }
         PromaAction::Workspaces { json } => {
             let workspaces = proma::workspaces(&root)?;
             if json {
@@ -1688,6 +1724,21 @@ mod tests {
         assert!(Cli::try_parse_from(["kitter", "proma", "recover"]).is_err());
         assert!(Cli::try_parse_from(["kitter", "install", "alpha", "--project", "/tmp/native", "--target", "proma"]).is_ok());
         assert!(Cli::try_parse_from(["kitter", "project", "/tmp/native", "--agent", "proma"]).is_ok());
+    }
+
+    #[test]
+    fn builtin_follow_defaults_to_preview_and_apply_requires_a_plan() {
+        let cli = Cli::try_parse_from(["kitter", "proma", "builtin-follow"]).unwrap();
+        assert!(matches!(cli.command, Command::Proma {
+            action: PromaAction::BuiltinFollow { apply: None }
+        }));
+        assert!(Cli::try_parse_from(["kitter", "proma", "builtin-follow", "--apply"]).is_err());
+        let cli = Cli::try_parse_from([
+            "kitter", "proma", "builtin-follow", "--apply", "/tmp/reviewed-plan.json"
+        ]).unwrap();
+        assert!(matches!(cli.command, Command::Proma {
+            action: PromaAction::BuiltinFollow { apply: Some(_) }
+        }));
     }
 
     #[test]

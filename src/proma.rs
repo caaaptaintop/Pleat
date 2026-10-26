@@ -1,5 +1,6 @@
 //! Proma workspace installations. Skill entries are real packages; local data
 //! remains at its existing source and is never copied into a workspace.
+pub mod builtin_sync;
 use crate::{
     package_fs::Directory,
     update_protection::{Manifest, Node},
@@ -976,9 +977,10 @@ pub(crate) struct LocalMirrorSync {
 }
 
 #[derive(Default, Debug)]
-pub(crate) struct LocalSyncReport {
+pub struct LocalSyncReport {
     pub updated: usize,
     pub inactive_updated: usize,
+    pub catalog_changed: bool,
     pub warnings: Vec<String>,
 }
 
