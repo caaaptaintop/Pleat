@@ -331,8 +331,12 @@ fn normalize_npx_source(input: &str) -> Result<String> {
     if value.is_empty() {
         bail!("请输入 skills.sh 或 GitHub 地址");
     }
-    if value.starts_with("http://") || value.starts_with("https://") || value.starts_with("git@") {
-        return Ok(normalize_repository_url(value));
+    if value.starts_with("http://")
+        || value.starts_with("https://")
+        || value.starts_with("git@")
+        || value.starts_with("ssh://")
+    {
+        return Ok(value.to_string());
     }
     let parts = value.split_whitespace().collect::<Vec<_>>();
     parts
@@ -344,15 +348,7 @@ fn normalize_npx_source(input: &str) -> Result<String> {
                 .find(|part| part.starts_with("http"))
                 .map(|part| (*part).to_string())
         })
-        .map(|value| normalize_repository_url(&value))
         .context("没有识别到 skills.sh 或 GitHub 地址")
-}
-
-fn normalize_repository_url(value: &str) -> String {
-    if let Some(path) = value.strip_prefix("git@github.com:") {
-        return format!("https://github.com/{}", path.trim_end_matches(".git"));
-    }
-    value.to_string()
 }
 
 fn normalize_claude_plugin(input: &str) -> Result<String> {
@@ -400,9 +396,10 @@ fn update_record(library: &mut SkillLibrary, mut record: SkillRecord) -> Result<
         SkillOrigin::Npx {
             repository, skill, ..
         } => {
-            let workspace = npx_workspace(&repository);
-            ensure_npx_skill(&workspace, &repository, &skill)?;
-            npx_update(&workspace, Some(&skill))?;
+            let workspace = npx_workspace(library.data_dir(), &repository);
+            // Re-add only this skill: `skills update` can refresh the entire
+            // workspace and has reported success after failed reinstalls.
+            npx_add(&workspace, &repository, &skill)?;
             let source_hash = npx_lock_hash(&workspace, &skill)?;
             updated_origin = Some(SkillOrigin::Npx {
                 repository,
@@ -497,7 +494,7 @@ pub fn check_updates_with_progress(
             current: Some(repository.clone()),
         });
         let result = (|| -> Result<HashMap<String, String>> {
-            let workspace = npx_workspace(&repository);
+            let workspace = npx_workspace(library.data_dir(), &repository);
             for record in &skills {
                 let SkillOrigin::Npx { skill, .. } = &record.origin else {
                     continue;
@@ -511,23 +508,31 @@ pub fn check_updates_with_progress(
             npx_lock_hashes(&workspace)
         })();
         let hashes = match result {
-            Ok(hashes) => hashes,
+            Ok(hashes) => Some(hashes),
             Err(error) => {
                 failures.push(format!("Npx 来源检查失败：{error:#}"));
-                HashMap::new()
+                None
             }
         };
         for record in skills {
             let available = match &record.origin {
                 SkillOrigin::Npx {
                     skill, source_hash, ..
-                } => hashes
-                    .get(skill)
-                    .is_some_and(|current| source_hash.as_deref() != Some(current.as_str())),
-                _ => false,
+                } => hashes.as_ref().and_then(|hashes| {
+                    let current = hashes.get(skill);
+                    if current.is_none() {
+                        failures.push(format!("{}: Npx lock 中没有技能版本", record.name));
+                    }
+                    current.map(|current| source_hash.as_deref() != Some(current.as_str()))
+                }),
+                _ => None,
             };
-            library.set_update_available_by_storage(&record.storage_name, available)?;
-            count += usize::from(available);
+            // An unavailable source is not evidence that the installed copy is
+            // current. Preserve the last successful status on failed checks.
+            if let Some(available) = available {
+                library.set_update_available_by_storage(&record.storage_name, available)?;
+                count += usize::from(available);
+            }
             scanned += 1;
             on_progress(UpdateCheckProgress {
                 scanned,
@@ -614,10 +619,10 @@ impl NpxLockEntry {
     }
 }
 
-fn npx_workspace(repository: &str) -> PathBuf {
+fn npx_workspace(data_dir: &Path, repository: &str) -> PathBuf {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     repository.hash(&mut hasher);
-    crate::config::app_data_dir()
+    data_dir
         .join("library-support")
         .join("cache")
         .join("npx-sources")
@@ -714,12 +719,35 @@ fn same_tree(left: &Path, right: &Path) -> Result<bool> {
             {
                 continue;
             }
-            files.push((relative, fs::read(entry.path())?));
+            let bytes = fs::read(entry.path())?;
+            let bytes = normalize_crlf(&bytes).unwrap_or(bytes);
+            files.push((relative, bytes));
         }
         files.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(files)
     };
     Ok(collect(left)? == collect(right)?)
+}
+
+// Git can materialize text as CRLF during checkout. Never normalize binary
+// data with NUL bytes or lone carriage returns.
+fn normalize_crlf(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.contains(&0)
+        || !bytes.windows(2).any(|pair| pair == b"\r\n")
+        || bytes
+            .iter()
+            .enumerate()
+            .any(|(index, byte)| *byte == b'\r' && bytes.get(index + 1) != Some(&b'\n'))
+    {
+        return None;
+    }
+    Some(
+        bytes
+            .iter()
+            .copied()
+            .filter(|byte| *byte != b'\r')
+            .collect(),
+    )
 }
 
 fn run(command: &mut Command) -> Result<()> {
@@ -743,6 +771,11 @@ fn run(command: &mut Command) -> Result<()> {
 fn tool_command(name: &str) -> Command {
     let executable = find_tool(name).unwrap_or_else(|| PathBuf::from(name));
     let mut command = Command::new(&executable);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
     if let Some(bin_dir) = executable.parent() {
         let mut paths = vec![bin_dir.to_path_buf()];
         if let Some(current) = env::var_os("PATH") {
@@ -977,6 +1010,7 @@ mod tests {
             &stub,
             r#"#!/bin/sh
 printf 'call\n' >> "$KITTER_IMPORT_FIXTURE/calls"
+[ "$4" = 'git@github.com:fixture/import-test.git' ] || exit 90
 [ "$6" = '*' ] || exit 91
 /bin/cp -R "$KITTER_IMPORT_FIXTURE/snapshot/." .
 "#,
@@ -1018,7 +1052,7 @@ printf 'call\n' >> "$KITTER_IMPORT_FIXTURE/calls"
         let Some(root) = env::var_os("KITTER_IMPORT_FIXTURE").map(PathBuf::from) else {
             return;
         };
-        let repository = "https://github.com/fixture/import-test";
+        let repository = "git@github.com:fixture/import-test.git";
         let mut scan = scan_npx(repository).unwrap();
         let selected = scan
             .skills()
@@ -1234,7 +1268,7 @@ printf 'call\n' >> "$KITTER_IMPORT_FIXTURE/calls"
 
         let scan = SkillScan {
             origin: ScanOrigin::Npx {
-                repository: "owner/repository".into(),
+                repository: "git@github.com:owner/repository.git".into(),
             },
             skills: vec![ScannedSkill {
                 name: "alpha".into(),
@@ -1253,9 +1287,197 @@ printf 'call\n' >> "$KITTER_IMPORT_FIXTURE/calls"
         assert!(matches!(
             library.record("alpha").unwrap().origin,
             SkillOrigin::Npx {
+                repository,
                 source_hash: Some(hash),
                 ..
-            } if hash == "fresh-hash"
+            } if hash == "fresh-hash" && repository == "git@github.com:owner/repository.git"
         ));
+    }
+
+    #[test]
+    fn repository_input_preserves_transport() {
+        for repository in [
+            "git@github.com:owner/repository.git",
+            "ssh://git@github.com/owner/repository.git",
+            "https://github.com/owner/repository.git",
+            "https://gitlab.com/owner/repository/",
+        ] {
+            assert_eq!(normalize_npx_source(repository).unwrap(), repository);
+            assert_eq!(
+                normalize_npx_source(&format!("npx skills add {repository}")).unwrap(),
+                repository
+            );
+        }
+    }
+
+    #[test]
+    fn crlf_tree_comparison_preserves_content_and_binary_differences() {
+        let temp = tempfile::tempdir().unwrap();
+        let left = temp.path().join("left");
+        let right = temp.path().join("right");
+        write_skill(&left, "alpha");
+        write_skill(&right, "alpha");
+        for (left_bytes, right_bytes, equal) in [
+            (
+                b"first\r\nsecond\r\n".as_slice(),
+                b"first\nsecond\n".as_slice(),
+                true,
+            ),
+            (b"first\r\nchanged\r\n", b"first\nsecond\n", false),
+            (b"binary\0payload\r\n", b"binary\0payload\n", false),
+            (b"lone\rcarriage\r\n", b"lone\rcarriage\n", false),
+        ] {
+            fs::write(left.join("reference.txt"), left_bytes).unwrap();
+            fs::write(right.join("reference.txt"), right_bytes).unwrap();
+            assert_eq!(same_tree(&left, &right).unwrap(), equal);
+            assert_eq!(same_tree(&right, &left).unwrap(), equal);
+        }
+        fs::write(right.join("extra.txt"), "extra").unwrap();
+        assert!(!same_tree(&left, &right).unwrap());
+        assert!(same_tree(&left, &temp.path().join("missing")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn npx_checks_and_single_skill_updates_use_an_isolated_fixture() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let bin = temp.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let stub = bin.join("npx");
+        fs::write(&stub, r#"#!/bin/sh
+if [ "$3" = 'add' ]; then
+    [ "$4" = 'git@github.com:fixture/update-test.git' ] || exit 90
+    [ "$6" = 'alpha' ] || exit 91
+    /bin/cp "$KITTER_UPDATE_FIXTURE/fresh.md" .agents/skills/alpha/SKILL.md
+    printf '%s' '{"skills":{"alpha":{"computedHash":"new"},"beta":{"computedHash":"old"}}}' > skills-lock.json
+    printf 'add\n' >> "$KITTER_UPDATE_FIXTURE/calls"
+    exit 0
+fi
+[ "$3" = 'update' ] || exit 92
+IFS= read -r mode < "$KITTER_UPDATE_FIXTURE/mode"
+case "$mode" in
+    fail) printf 'fixture remote unavailable\n' >&2; exit 17 ;;
+    missing) printf '%s' '{"skills":{}}' > skills-lock.json ;;
+    current) printf '%s' '{"skills":{"alpha":{"computedHash":"old"},"beta":{"computedHash":"old"}}}' > skills-lock.json ;;
+    changed) printf '%s' '{"skills":{"alpha":{"computedHash":"new"},"beta":{"computedHash":"old"}}}' > skills-lock.json ;;
+    *) exit 93 ;;
+esac
+"#).unwrap();
+        fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+        let output = Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "source::tests::npx_update_fixture_child",
+                "--nocapture",
+            ])
+            .env("KITTER_UPDATE_FIXTURE", temp.path())
+            .env("KITTER_HOME", temp.path().join("unused-global-data"))
+            .env("PATH", &bin)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!temp.path().join("unused-global-data").exists());
+        assert_eq!(
+            fs::read_to_string(temp.path().join("calls")).unwrap(),
+            "add\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn npx_update_fixture_child() {
+        let Some(root) = env::var_os("KITTER_UPDATE_FIXTURE").map(PathBuf::from) else {
+            return;
+        };
+        let repository = "git@github.com:fixture/update-test.git";
+        let mut library = SkillLibrary::open_in(root.join("data")).unwrap();
+        let workspace = npx_workspace(library.data_dir(), repository);
+        for name in ["alpha", "beta"] {
+            let source = root.join(name);
+            write_skill(&source, name);
+            library
+                .import(
+                    &source,
+                    SkillRecord {
+                        name: name.into(),
+                        storage_name: String::new(),
+                        description: "fixture".into(),
+                        origin: SkillOrigin::Npx {
+                            repository: repository.into(),
+                            skill: name.into(),
+                            source_hash: Some("old".into()),
+                        },
+                        update_available: name == "alpha",
+                        group_id: None,
+                        last_operated_at: 0,
+                    },
+                )
+                .unwrap();
+            write_skill(&npx_skill_path(&workspace, name), name);
+        }
+        fs::write(workspace.join("skills-lock.json"), r#"{"skills":{}}"#).unwrap();
+        let alpha = library.record("alpha").unwrap();
+        library
+            .set_update_available_by_storage(&alpha.storage_name, true)
+            .unwrap();
+        for mode in ["fail", "missing"] {
+            fs::write(root.join("mode"), format!("{mode}\n")).unwrap();
+            let mut progress = Vec::new();
+            let error =
+                check_updates_with_progress(&mut library, |p| progress.push(p)).unwrap_err();
+            assert!(error.to_string().contains(if mode == "fail" {
+                "fixture remote unavailable"
+            } else {
+                "Npx lock 中没有技能版本"
+            }));
+            assert!(library.record("alpha").unwrap().update_available);
+            assert!(!library.record("beta").unwrap().update_available);
+            assert_eq!(progress.last().unwrap().scanned, 2);
+            assert_eq!(progress.last().unwrap().total, 2);
+            let reopened = SkillLibrary::open_in(root.join("data")).unwrap();
+            assert!(reopened.record("alpha").unwrap().update_available);
+            // Reopening can reconcile persisted metadata; keep its revision
+            // rather than attempting another write through the stale handle.
+            library = reopened;
+        }
+        fs::write(root.join("mode"), "current\n").unwrap();
+        assert_eq!(check_updates(&mut library).unwrap(), 0);
+        assert!(!library.record("alpha").unwrap().update_available);
+        fs::write(root.join("mode"), "changed\n").unwrap();
+        assert_eq!(check_updates(&mut library).unwrap(), 1);
+        assert!(library.record("alpha").unwrap().update_available);
+        let alpha_path = library.skill_path("alpha").unwrap();
+        fs::create_dir(alpha_path.join("local-data")).unwrap();
+        fs::write(alpha_path.join("local-data/keep.txt"), "private fixture").unwrap();
+        fs::write(
+            root.join("fresh.md"),
+            "---\nname: alpha\ndescription: updated\n---\nupdated fixture\n",
+        )
+        .unwrap();
+        update_by_storage(&mut library, &alpha.storage_name).unwrap();
+        assert!(
+            fs::read_to_string(alpha_path.join("SKILL.md"))
+                .unwrap()
+                .contains("updated fixture")
+        );
+        assert_eq!(
+            fs::read_to_string(alpha_path.join("local-data/keep.txt")).unwrap(),
+            "private fixture"
+        );
+        assert!(!library.record("alpha").unwrap().update_available);
+        assert!(matches!(library.record("alpha").unwrap().origin,
+            SkillOrigin::Npx { repository: repo, source_hash: Some(hash), .. }
+                if repo == repository && hash == "new"));
+        assert!(
+            fs::read_to_string(library.skill_path("beta").unwrap().join("SKILL.md"))
+                .unwrap()
+                .contains("fixture")
+        );
     }
 }

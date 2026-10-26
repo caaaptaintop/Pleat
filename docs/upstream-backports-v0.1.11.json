@@ -1,0 +1,98 @@
+{
+  "author": "admin",
+  "last_modified_by": "admin",
+  "version": "0.1.11",
+  "upstream": {
+    "repository": "https://github.com/what1f/kitter",
+    "tag": "v0.2.2",
+    "commit": "cf52c5e0a0612b2009d0d645afb564dc8aef79ba",
+    "fork_base": "e953940e3e384f46498e57c93f703b96d7a49e80",
+    "new_commits_evaluated": 39,
+    "full_merge_performed": false
+  },
+  "backports": [
+    {
+      "commit": "963ab07f9b14c4b692e4500fdf0be9fcbc2cdfb8",
+      "scope": "static MSVC runtime for standalone Windows binaries",
+      "method": "same three-line Cargo target configuration"
+    },
+    {
+      "commit": "f741506287eea8a0a43a7dfa6a5c3ae2c33ec568",
+      "scope": "Agent name tooltips and filtered/total skill count",
+      "method": "adapted to existing Pleat UI and source grouping; no UI framework migration"
+    },
+    {
+      "commit": "885cf8f62f4ec8d47d6d4ff7a0f5a16118f702c9",
+      "scope": "独立移植输入标准化修复：保留 git@、ssh://、HTTPS 原始传输、.git 后缀及尾斜杠；直接输入与 npx skills add 输入均覆盖。既有导入路径继续直接保存请求 repository，不引入上游 lock 定位器。",
+      "method": "bounded backport to existing source.rs"
+    },
+    {
+      "commit": "51cd23a7834fc66fc216591732a0d3d95c129a6d",
+      "scope": "复用保守 normalize_crlf 算法到现有 same_tree：CRLF/LF 文本等价，NUL 二进制及孤立 CR 不归一化；实际内容、额外文件、缺失来源仍可识别。",
+      "method": "bounded backport to existing source.rs"
+    },
+    {
+      "commit": "51cd23a7834fc66fc216591732a0d3d95c129a6d",
+      "scope": "按现架构适配检查失败语义：Npx 非零退出或缺失技能 lock hash 时返回错误并保留既有 update_available，不误清除为最新；成功检查仍正常更新状态和进度。",
+      "method": "bounded backport to existing source.rs"
+    },
+    {
+      "commit": "51cd23a7834fc66fc216591732a0d3d95c129a6d",
+      "scope": "Npx 工作缓存归属实际 library.data_dir；单技能更新改为 npx add --skill 指定技能，避免 skills update 更新整个工作缓存。",
+      "method": "bounded backport to existing source.rs"
+    },
+    {
+      "commit": "4dd98c1e476a1158942a5067ce5833ab018299fc",
+      "scope": "按协调增量移植 tool_command 的 Windows CREATE_NO_WINDOW 5 行。",
+      "method": "bounded backport to existing source.rs"
+    }
+  ],
+  "deferred": [
+    {
+      "scope": "QuickJS Agent plugins, string-keyed registry and replacement scanner pipeline",
+      "reason": "requires re-porting Pleat-specific native adapters and acceptance; outside this bounded update"
+    },
+    {
+      "scope": "presets, bulk AGENTS.md injection and full i18n/UI migration",
+      "reason": "new product/metadata behavior and overlapping architecture; retain current tested Pleat flow"
+    },
+    {
+      "scope": "full upstream update/restore transaction and batch-update pipeline",
+      "reason": "depends on rewritten registry/UI/source modules; existing local-data, merge and trigger protections retained"
+    },
+    {
+      "scope": "Windows cross-build resource/icon rewrite",
+      "reason": "native Windows resource path already exists; keep Pleat artwork and use existing platform CI"
+    }
+  ],
+  "preserved": [
+    "Pleat branding and existing Apache tracing shim",
+    "Proma all-workspace built-in following",
+    "accepted Agent compatibility scopes",
+    "local-data and local adaptation protection",
+    "uncommitted source-trigger work excluded from release"
+  ],
+  "additional_packaging_cleanup": [
+    "remove two accidentally tracked generated Python bytecode files from the release tree",
+    "ignore Python bytecode caches"
+  ],
+  "full17_complete": false,
+  "source_validation": {
+    "source_tests": 12,
+    "fixture_only": true,
+    "command": "CARGO_BUILD_JOBS=1 cargo test --locked --offline --lib source::tests -- --test-threads=1"
+  },
+  "source_scope_limits": [
+    "51cd23a Git tree / materialized symlink 解析及对应缓存格式: 基线 src/source.rs 无 remote 模块，现 Npx 检查依赖 CLI lock hash。上游依赖 RemoteSkill/RemoteKey/CheckSkill/Snapshot/tree mode/link_target、Git 对象抓取及缓存失效。不能在允许写集内独立移植，故不以 follow_links 扩大文件读取或改变 local-data 边界。",
+    "885cf8f remote.rs URL parser 与 NpxLockEntry remote_source 定位器: 基线无 RemoteSkill 类型或远端 source/ref/path 注册接口；现有导入直接保存请求 repository，所需 URL 保留已通过标准化修复达成。",
+    "上游 remote 检查并发、周期自动检查/批量更新 updates.rs、i18n/rquickjs/Agent registry/preset 等: 超出独立 source bugfix 范围，涉及额外模块/API/依赖，不合入。",
+    "上游下载后重新加载登记的并发检查扩展: 未整体引入上游 update_record；保留当前包基线、三方合并、来源保护及登记版本校验，不扩大本次改动。"
+  ],
+  "source_runtime_limits": [
+    "Windows CREATE_NO_WINDOW 仅在 macOS 主机构建中静态保留；未执行 Windows 运行验证。",
+    "未引入上游 Git tree 检查引擎；Npx 仍依赖 skills CLI 与 lock hash。CLI 成功退出但留下陈旧 hash 的情况仍可能误报，未宣称解决全部不可用远端误报。",
+    "CRLF 修复仅覆盖现有 same_tree 使用路径；Npx lock hash 比较与 Git tree/materialized symlink 比较未升级到上游行为。",
+    "既有已被重写为 HTTPS 的来源记录不会自动恢复 SSH；无法从现存记录推断原始私有来源。",
+    "无真实私有仓库、远端导入、Agent/provider、真实配置/registry 写入验证；验证均为临时 fixture 和本地 shell stub。"
+  ]
+}

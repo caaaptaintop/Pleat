@@ -1053,6 +1053,11 @@ impl KitterApp {
         let searching = !query.is_empty();
         let visible_skills = self.visible_library_skills(cx);
         let visible_count = visible_skills.len();
+        let count_label = if searching || self.tags_flow.selected_skill_filter.is_some() {
+            format!("{visible_count} / {}", self.model.skills.len())
+        } else {
+            visible_count.to_string()
+        };
         let configured_groups = self.model.library.groups();
         let group_ids = configured_groups
             .iter()
@@ -1176,9 +1181,9 @@ impl KitterApp {
                         self.tags_flow
                             .selected_skill_filter
                             .and_then(|tag| self.tags_flow.skills.path(tag))
-                            .map(|path| format!("#{path}  {visible_count}"))
+                            .map(|path| format!("#{path}  {count_label}"))
                             .unwrap_or_else(|| {
-                                format!("{}  {}", self.tr("全部", "All"), visible_count)
+                                format!("{}  {}", self.tr("全部", "All"), count_label)
                             }),
                     )
                     .child(div().flex_1())

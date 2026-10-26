@@ -20,6 +20,7 @@ Kitter provides skill imports, a central library, Agent-specific installation an
 
 - Discover Codex local projects and native Proma workspaces, merge projects that point to the same directory, and archive, hide or restore entries in the project list.
 - Install and sync skill copies in Proma workspaces. Identify managed origins, external links and local variants. Install or remove user skills; enable or disable verified built-in presets.
+- Follow Proma's bundled skill contents across registered workspaces after applying a reviewed first-use plan, while preserving active/inactive locations and local edits.
 - Manage skills across several projects and Agents in one operation. Review target paths and the impact list before execution, then see which items failed.
 - Group project skills by source, improve name and description search, detect installed Agents, and keep the selected project and workspace when opening management controls.
 - Compare the source baseline, local files and incoming version before an update. Keep non-conflicting edits and stop on conflicts. Preserve each skill's `local-data/` and local adaptation notes.
@@ -51,7 +52,7 @@ Choose skills, Agents and target projects, then preview the scope. Ordinary Agen
 
 ### macOS installer
 
-1. Download `Pleat-0.1.10-macos-arm64.dmg` from [GitHub Release v0.1.10](https://github.com/caaaptaintop/Pleat/releases/tag/v0.1.10) for an Apple Silicon Mac.
+1. Download `Pleat-0.1.11-macos-arm64.dmg` from [GitHub Release v0.1.11](https://github.com/caaaptaintop/Pleat/releases/tag/v0.1.11) for an Apple Silicon Mac.
 2. Open the DMG and drag **Pleat** into **Applications**.
 3. Open Pleat from Applications.
 
@@ -114,6 +115,15 @@ Use `--target universal` for the shared `.agents/skills` directory. Proma operat
 kitter proma workspaces --json
 kitter proma status --workspace workspace-slug --json
 ```
+
+On macOS, preview bundled Proma skill updates across all registered workspaces, then inspect the saved plan before applying it:
+
+```sh
+kitter proma builtin-follow > proma-builtin-plan.json
+kitter proma builtin-follow --apply proma-builtin-plan.json
+```
+
+Applying a plan enables future content checks while Pleat is running. When Pleat is closed, updates are checked on the next launch. Unknown or locally modified copies are preserved for review; missing skills are not added.
 
 Run `kitter --help` for more options. The bundled Agent skill is still [`kitter`](resources/skills/kitter).
 

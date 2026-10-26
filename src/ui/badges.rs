@@ -346,12 +346,15 @@ impl KitterApp {
         let mut badges = div().flex().items_center();
         for (index, (name, icon)) in agents.iter().take(5).enumerate() {
             let inactive = proma_inactive && *name == "Proma";
+            let label = if inactive { format!("{name} · {inactive_label}") } else { name.to_string() };
+            let tooltip = label.clone();
             badges = badges.child(
                 div()
                     .id(ElementId::Name(format!("agent-badge-{popover_id}-{index}").into()))
                     .relative()
                     .role(Role::Image)
-                    .aria_label(if inactive { format!("{name} · {inactive_label}") } else { name.to_string() })
+                    .aria_label(label)
+                    .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
                     .ml(if index == 0 { px(0.) } else { px(-5.) })
                     .size(px(25.))
                     .rounded_full()

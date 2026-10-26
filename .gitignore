@@ -3,3 +3,5 @@
 /.agents
 .DS_Store
 *.log
+__pycache__/
+*.py[cod]

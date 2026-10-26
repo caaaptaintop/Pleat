@@ -1,9 +1,9 @@
 {
   "author": "admin",
   "last_modified_by": "admin",
-  "stage": "local-integration-preview-20261026",
+  "stage": "scoped-agent-compatibility-baseline-v0.1.11",
   "base_commit": "5419f2faae2a43b0e2e84a3997a127a0fd2bbdc0",
-  "release_status": "LOCAL_STAGE_ONLY_NOT_PUBLISHED",
+  "release_status": "SCOPED_PRE_RELEASE_NOT_FULL17",
   "support_scope": [
     {
       "id": "codex",
@@ -125,6 +125,7 @@
     }
   },
   "full17_complete": false,
-  "platform": "macOS ARM64 local candidate; no new cross-platform runtime claims",
-  "publication_authorized": false
+  "platform": "macOS ARM64 desktop/CLI; other platform core checks are recorded separately from native runtime acceptance",
+  "publication_authorized": true,
+  "publication_target": "caaaptaintop/Pleat v0.1.11 macOS ARM64 prerelease"
 }

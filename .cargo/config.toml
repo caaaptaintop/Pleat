@@ -1,0 +1,3 @@
+[target.'cfg(all(target_os = "windows", target_env = "msvc"))']
+# Ship standalone executables without requiring the Visual C++ Redistributable.
+rustflags = ["-C", "target-feature=+crt-static"]

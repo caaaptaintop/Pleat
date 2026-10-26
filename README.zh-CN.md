@@ -51,7 +51,7 @@ Kitter 已提供技能导入、统一技能库、按 Agent 安装和上下文估
 
 ### macOS 安装包
 
-1. 从 [GitHub Release v0.1.10](https://github.com/caaaptaintop/Pleat/releases/tag/v0.1.10) 下载 `Pleat-0.1.10-macos-arm64.dmg`，适用于 Apple Silicon Mac。
+1. 从 [GitHub Release v0.1.11](https://github.com/caaaptaintop/Pleat/releases/tag/v0.1.11) 下载 `Pleat-0.1.11-macos-arm64.dmg`，适用于 Apple Silicon Mac。
 2. 打开 DMG，将 **Pleat** 拖入“应用程序”。
 3. 从“应用程序”打开 Pleat。
 
@@ -114,6 +114,15 @@ kitter update skill-name
 kitter proma workspaces --json
 kitter proma status --workspace workspace-slug --json
 ```
+
+macOS 上可先预览全部登记工作区的 Proma 内置技能更新，检查保存的计划后再应用：
+
+```sh
+kitter proma builtin-follow > proma-builtin-plan.json
+kitter proma builtin-follow --apply proma-builtin-plan.json
+```
+
+首次应用计划后，Pleat 运行期间会继续检查内置内容；关闭期间的更新在下次启动补齐。各副本保留原启用／停用位置，未知或本地修改的副本保留待处理，不补装缺失技能。
 
 更多参数见 `kitter --help`。内置 Agent 技能入口仍为 [`kitter`](resources/skills/kitter)。
 
