@@ -1,3 +1,14 @@
+# Pleat v0.1.12
+
+## Updates
+
+- Replace the WorkBuddy placeholder with its official website icon and retain its official sRGB fallback colors.
+- Render the WorkBuddy brand in color across Agent selectors, project lists, summaries and skill badges.
+
+## Distribution
+
+This prerelease provides the Apple Silicon macOS installer. Existing platform and Agent compatibility limitations from v0.1.11 still apply, including unresolved Windows core CI failures.
+
 # Pleat v0.1.11
 
 ## Updates

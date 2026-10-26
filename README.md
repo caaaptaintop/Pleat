@@ -52,7 +52,7 @@ Choose skills, Agents and target projects, then preview the scope. Ordinary Agen
 
 ### macOS installer
 
-1. Download `Pleat-0.1.11-macos-arm64.dmg` from [GitHub Release v0.1.11](https://github.com/caaaptaintop/Pleat/releases/tag/v0.1.11) for an Apple Silicon Mac.
+1. Download `Pleat-0.1.12-macos-arm64.dmg` from [GitHub Release v0.1.12](https://github.com/caaaptaintop/Pleat/releases/tag/v0.1.12) for an Apple Silicon Mac.
 2. Open the DMG and drag **Pleat** into **Applications**.
 3. Open Pleat from Applications.
 
