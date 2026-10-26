@@ -13,3 +13,5 @@
 ## Distribution
 
 This prerelease provides the Apple Silicon macOS installer. It uses ad hoc signing and is not notarized. [First-launch instructions](README.md#if-macos-blocks-the-first-launch) remain applicable.
+
+Windows core CI still has unresolved failures and is not a verified release platform. The CI workflow and its failing checks remain enabled.

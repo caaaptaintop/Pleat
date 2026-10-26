@@ -103,6 +103,13 @@
       "separate ordinary copied-skill header roundtrip from adapted-copy update and registry-only mode-change contract; preserve raw upstream and private adaptation bytes",
       "compile two symlink/POSIX-mode-only cases on Unix; ordinary cross-platform tests remain active"
     ],
-    "native_Agent_acceptance_repeated": false
+    "native_Agent_acceptance_repeated": false,
+    "portable_guard_fixtures": "use the platform temporary directory for four Grok storage guard test fixtures; retain the controller-only /private/tmp scope and every protection assertion"
+  },
+  "platform_validation_limits": {
+    "distribution": "Apple Silicon macOS DMG only",
+    "windows_core_CI": "92 failures at e804764, including POSIX-only absolute fixtures and unavailable file identity; checks remain enabled and this release does not claim Windows verification",
+    "failure_run": "https://github.com/caaaptaintop/Pleat/actions/runs/40292354255",
+    "native_17_acceptance_repeated": false
   }
 }

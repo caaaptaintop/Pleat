@@ -243,7 +243,7 @@ fn operate_owned_grok_storage() {
 
 fn guard_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let temporary = tempfile::Builder::new().prefix("pleat-grok-storage-guard-")
-        .tempdir_in("/private/tmp").expect("owned fixture creation");
+        .tempdir().expect("owned fixture creation");
     let root = temporary.path().canonicalize().expect("owned fixture canonical");
     let library = root.join("library");
     fs::create_dir(&library).expect("owned library creation");
@@ -254,7 +254,7 @@ fn guard_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
 fn storage_guard_rejects_builtin_directory_link() {
     let (_temporary, root, library) = guard_fixture();
     let external = tempfile::Builder::new().prefix("pleat-grok-storage-sentinel-")
-        .tempdir_in("/private/tmp").expect("owned external fixture");
+        .tempdir().expect("owned external fixture");
     let sentinel = external.path().join("sentinel");
     fs::write(&sentinel, b"owned-sentinel").expect("owned sentinel");
     std::os::unix::fs::symlink(external.path(), library.join(kitter::library::KITTER_SKILL_STORAGE))
@@ -270,7 +270,7 @@ fn storage_guard_rejects_builtin_leaf_link() {
     let builtin = library.join(kitter::library::KITTER_SKILL_STORAGE);
     fs::create_dir(&builtin).expect("fixture builtin");
     let external = tempfile::Builder::new().prefix("pleat-grok-storage-sentinel-")
-        .tempdir_in("/private/tmp").expect("owned external fixture");
+        .tempdir().expect("owned external fixture");
     let sentinel = external.path().join("sentinel");
     fs::write(&sentinel, b"owned-sentinel").expect("owned sentinel");
     std::os::unix::fs::symlink(&sentinel, builtin.join("SKILL.md")).expect("fixture link");
@@ -284,7 +284,7 @@ fn storage_guard_rejects_builtin_hard_link() {
     let builtin = library.join(kitter::library::KITTER_SKILL_STORAGE);
     fs::create_dir(&builtin).expect("fixture builtin");
     let external = tempfile::Builder::new().prefix("pleat-grok-storage-sentinel-")
-        .tempdir_in("/private/tmp").expect("owned external fixture");
+        .tempdir().expect("owned external fixture");
     let sentinel = external.path().join("sentinel");
     fs::write(&sentinel, b"owned-sentinel").expect("owned sentinel");
     fs::hard_link(&sentinel, builtin.join("SKILL.md")).expect("fixture hard link");

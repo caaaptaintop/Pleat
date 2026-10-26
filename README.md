@@ -58,6 +58,8 @@ Choose skills, Agents and target projects, then preview the scope. Ordinary Agen
 
 The installer is ad hoc signed and has not been notarized by Apple.
 
+This release provides an Apple Silicon macOS installer only. Windows core CI still has unresolved failures; Windows is not a verified release platform.
+
 #### If macOS blocks the first launch
 
 After confirming that the installer came from this repository's Releases:

@@ -57,6 +57,8 @@ Kitter 已提供技能导入、统一技能库、按 Agent 安装和上下文估
 
 安装包采用 ad hoc 签名，未经 Apple 公证。
 
+本次仅提供 Apple Silicon macOS 安装包。Windows 核心 CI 尚未通过，不作为已验证平台。
+
 #### 首次打开被拦截时
 
 确认安装包来自本仓库的 Releases 后，按以下步骤操作：
