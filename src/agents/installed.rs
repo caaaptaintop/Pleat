@@ -5,6 +5,12 @@ use super::{AGENT_ICON_ORDER, AgentIconInfo};
 
 pub fn installed_agents() -> Vec<AgentIconInfo> {
     let home = dirs::home_dir().unwrap_or_default();
+    let bins = command_roots(&home);
+    let apps = [PathBuf::from("/Applications"), home.join("Applications")];
+    detect(&bins, &apps)
+}
+
+fn command_roots(home: &Path) -> Vec<PathBuf> {
     let mut bins = env::var_os("PATH").map(|path| env::split_paths(&path).collect::<Vec<_>>())
         .unwrap_or_default();
     #[cfg(unix)]
@@ -14,8 +20,34 @@ pub fn installed_agents() -> Vec<AgentIconInfo> {
             ".opencode/bin", ".claude/local", ".pi/agent/bin", ".grok/bin"]
             .map(|relative| home.join(relative)));
     }
-    let apps = [PathBuf::from("/Applications"), home.join("Applications")];
-    detect(&bins, &apps)
+    bins
+}
+
+/// Resolve a native npm package's bundled root from its installed CLI link,
+/// without invoking Node/OpenClaw or guessing a sibling repository's skills.
+pub(crate) fn openclaw_bundled_skills_dir(home: &Path) -> Option<PathBuf> {
+    bundled_openclaw_package(&command_roots(home))
+}
+
+fn bundled_openclaw_package(bins: &[PathBuf]) -> Option<PathBuf> {
+    for bin in bins {
+        let cli = bin.join(if cfg!(windows) { "openclaw.cmd" } else { "openclaw" });
+        if !executable(&cli) { continue; }
+        let Some(cli) = cli.canonicalize().ok() else { continue; };
+        for root in cli.ancestors().skip(1).take(6) {
+            let manifest = root.join("package.json");
+            if !manifest.metadata().is_ok_and(|m| m.is_file() && m.len() <= 128 * 1024) { continue; }
+            let package = std::fs::read(&manifest).ok()
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+            if package.as_ref().and_then(|v| v.get("name")).and_then(|v| v.as_str()) == Some("openclaw") {
+                return root.join("skills").is_dir().then(|| root.join("skills"));
+            }
+        }
+        // The first executable is the active PATH command; later installs do
+        // not supply its missing package metadata.
+        return None;
+    }
+    None
 }
 
 fn commands(id: &str) -> &'static [&'static str] {
@@ -36,6 +68,7 @@ fn commands(id: &str) -> &'static [&'static str] {
         "antigravity" => &["agy", "antigravity"],
         "copilot" => &["copilot"],
         "trae" => &["trae"],
+        "workbuddy" => &["workbuddy"],
         _ => &[],
     }
 }
@@ -75,6 +108,7 @@ fn app_installed(id: &str, roots: &[PathBuf]) -> bool {
         "dimagent" => &["DimAgent.app"],
         "antigravity" => &["Antigravity.app"],
         "trae" => &["Trae.app", "Trae CN.app"],
+        "workbuddy" => &["WorkBuddy.app"],
         _ => &[],
     };
     roots.iter().any(|root| names.iter().any(|name| {
@@ -88,6 +122,9 @@ fn app_installed(id: &str, roots: &[PathBuf]) -> bool {
         };
         // The ordinary ChatGPT app is not the Codex desktop app.
         if id == "codex" && property("CFBundleIdentifier").as_deref() != Some("com.openai.codex") {
+            return false;
+        }
+        if id == "workbuddy" && property("CFBundleIdentifier").as_deref() != Some("com.tencent.workbuddy.mac") {
             return false;
         }
         let Some(binary) = property("CFBundleExecutable") else { return false; };
@@ -125,6 +162,25 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn openclaw_bundled_root_requires_the_active_clis_package_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let package = temp.path().join("package");
+        let bins = temp.path().join("bin");
+        fs::create_dir_all(package.join("skills")).unwrap();
+        fs::create_dir_all(&bins).unwrap();
+        write_executable(&package.join("openclaw.mjs"));
+        std::os::unix::fs::symlink(package.join("openclaw.mjs"), bins.join("openclaw")).unwrap();
+        fs::write(package.join("package.json"), r#"{"name":"unrelated"}"#).unwrap();
+        assert!(bundled_openclaw_package(&[bins.clone()]).is_none());
+        fs::write(package.join("package.json"), r#"{"name":"openclaw"}"#).unwrap();
+        assert_eq!(bundled_openclaw_package(&[bins.clone()]), Some(package.canonicalize().unwrap().join("skills")));
+        let earlier = temp.path().join("earlier");
+        write_executable(&earlier.join("openclaw"));
+        assert!(bundled_openclaw_package(&[earlier, bins]).is_none());
     }
 
     #[test]

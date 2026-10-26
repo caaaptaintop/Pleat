@@ -581,6 +581,9 @@ impl KitterApp {
                 "搜索项目名称或路径"
             })
         });
+        let effective_skill_search = cx.new(|cx| InputState::new(window, cx).placeholder(if english {
+            "Search skill names or descriptions"
+        } else { "搜索技能名称或描述" }));
         let tag_name_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(if english {
                 "Tag name"
@@ -703,6 +706,10 @@ impl KitterApp {
         )
         .detach();
         let project_page_body = page_body.clone();
+        let effective_page_body = page_body.clone();
+        cx.subscribe_in(&effective_skill_search, window, move |_, _, event: &InputEvent, _, cx| {
+            if matches!(event, InputEvent::Change) { effective_page_body.update(cx, |_, cx| cx.notify()); }
+        }).detach();
         cx.subscribe_in(
             &install_project_search,
             window,
@@ -893,6 +900,7 @@ impl KitterApp {
                 project_agents_expanded: false,
                 expanded_project_plugins: HashSet::new(),
                 project_search,
+                effective_skill_search,
                 project_agent_filter: ProjectAgentFilter::default(),
                 list_view: ProjectListView::default(),
                 project_select,
@@ -1273,7 +1281,7 @@ impl KitterApp {
                 .borrow_mut()
                 .insert(path.clone(), generation);
             let path = path.clone();
-            let agents = self.model.installed_agents.clone();
+            let agents = self.available_project_agents();
             let discovered = self.projects_view.discovered_projects.clone();
             cx.spawn(async move |this, cx| {
                 let worker_path = path.clone();
@@ -1337,14 +1345,20 @@ impl KitterApp {
         self.set_installed_agents(crate::agents::installed_agents());
     }
 
+    pub(super) fn available_project_agents(&self) -> Vec<crate::agents::AgentIconInfo> {
+        crate::agents::project_agents(&self.model.installed_agents, &self.all_project_entries())
+    }
+
     fn set_installed_agents(&mut self, agents: Vec<crate::agents::AgentIconInfo>) -> bool {
         if agents == self.model.installed_agents { return false; }
         self.model.installed_agents = agents;
-        let installed = |kind: &AgentKind| self.model.installed_agents.iter().any(|agent| agent.id == kind.id());
-        self.projects_view.selected_project_agent = self.projects_view.selected_project_agent.filter(installed);
-        self.projects_view.project_agent_filter.agents.retain(installed);
+        let projects = self.all_project_entries();
+        let available = |kind: &AgentKind| ProjectAgentFilter::agent_available(*kind, &self.model.installed_agents, &projects);
+        self.projects_view.selected_project_agent = self.projects_view.selected_project_agent.filter(available);
+        self.projects_view.project_agent_filter.retain_available(&self.model.installed_agents, &projects);
+        let manageable = crate::agents::project_agents(&self.model.installed_agents, &projects);
         self.install_flow.selected_targets.retain(|target| *target == InstallTarget::Universal
-            || self.model.installed_agents.iter().any(|agent| agent.owns_target(*target)));
+            || manageable.iter().any(|agent| agent.owns_target(*target)));
         self.cross_project_agents_changed();
         self.projects_view.scan_generation = self.projects_view.scan_generation.wrapping_add(1);
         self.projects_view.context_estimate_tasks.borrow_mut().clear();
@@ -2721,7 +2735,9 @@ fn open_main_window(cx: &mut App) {
     cx.open_window(
         WindowOptions {
             titlebar: Some(TitlebarOptions {
-                title: Some("Pleat".into()),
+                title: Some(cfg!(debug_assertions)
+                    .then(|| std::env::var("KITTER_PREVIEW_APP_NAME").ok()).flatten()
+                    .filter(|name| !name.trim().is_empty()).unwrap_or_else(|| "Pleat".into()).into()),
                 appears_transparent: cfg!(target_os = "macos"),
                 traffic_light_position: cfg!(target_os = "macos")
                     .then(|| point(px(16.), px(17.))),

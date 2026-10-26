@@ -115,7 +115,7 @@ fn real_path(path: &Path, allow_missing: bool) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn identity(path: &Path) -> Result<String> {
+pub(crate) fn identity(path: &Path) -> Result<String> {
     let m = fs::symlink_metadata(path)?;
     #[cfg(unix)]
     {

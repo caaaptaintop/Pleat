@@ -257,7 +257,7 @@ mod tests {
                 root_path: Some(PathBuf::from("/skills")),
                 prompt_path: Some(format!("/skills/{name}/SKILL.md")),
                 scope: SkillScope::User,
-                visibility: SkillVisibility::Automatic,
+                user_invocable: true, visibility: SkillVisibility::Automatic,
                 source: SkillSource::Filesystem,
             })
             .collect::<Vec<_>>();

@@ -23,6 +23,7 @@ use crate::{
 
 pub(crate) mod storage;
 pub use storage::{StorageAction, StoragePlan};
+pub(crate) use storage::identity as filesystem_identity;
 
 pub const KITTER_SKILL_STORAGE: &str = "_kitter-builtin";
 const KITTER_SKILL_NAME: &str = "kitter";
@@ -77,6 +78,7 @@ pub struct SkillLibrary {
     data_dir: PathBuf,
     disk_revisions: Mutex<[Option<String>; 2]>,
     proma_sync_warnings: Vec<String>,
+    project_observations: Mutex<Vec<crate::project_discovery::ProjectEntry>>,
 }
 
 fn lock_registry_file(path: &Path) -> Result<FileLock> {
@@ -276,6 +278,7 @@ impl SkillLibrary {
             data_dir,
             disk_revisions,
             proma_sync_warnings: Vec::new(),
+            project_observations: Mutex::new(Vec::new()),
         };
         if changed {
             library.save_locked(&startup_lock)?;
@@ -468,7 +471,29 @@ impl SkillLibrary {
         Ok(())
     }
 
+    /// Reapply the requested native fields even when the recorded mode is the
+    /// same, so a source update cannot make a retry silently skip reconciliation.
+    pub fn apply_trigger_mode_by_storage(
+        &mut self,
+        storage_name: &str,
+        mode: TriggerMode,
+    ) -> Result<bool> {
+        let previous = self.trigger_mode_by_storage(storage_name);
+        self.set_trigger_mode_by_storage(storage_name, mode)?;
+        Ok(previous != mode)
+    }
+
     pub fn list(&self) -> Result<Vec<SkillSummary>> {
+        // Refresh native path projections once per list, not once per Skill.
+        // Feed back observations so an unreadable source retains its own rows.
+        let projects = {
+            let mut observed = self.project_observations.lock()
+                .map_err(|_| anyhow::anyhow!("项目观察锁不可用"))?;
+            if let Ok(current) = crate::project_discovery::refresh_agent_projects(&observed) {
+                *observed = current;
+            }
+            self.config.project_entries(&observed)
+        };
         let mut result = vec![];
         for entry in fs::read_dir(&self.config.library_dir)? {
             let entry = entry?;
@@ -497,7 +522,7 @@ impl SkillLibrary {
             }
             record.description = description.unwrap_or_default();
             result.push(SkillSummary {
-                installed_projects: self.install_count(&record.name, &path),
+                installed_projects: Self::install_count(&record.name, &path, &projects),
                 record,
                 manual_only: crate::effective_skills::is_manual_skill(&path),
                 path,
@@ -520,13 +545,12 @@ impl SkillLibrary {
         }).collect()
     }
 
-    fn install_count(&self, name: &str, source: &Path) -> usize {
-        let discovered = crate::proma::home()
-            .and_then(|root| crate::project_discovery::discover_proma_projects(&root).ok())
-            .unwrap_or_default();
-        let projects = crate::project_discovery::merge_projects(
-            &self.config.recent_projects, &discovered, &std::collections::BTreeSet::new(),
-        );
+    fn install_count(
+        name: &str,
+        source: &Path,
+        projects: &[crate::project_discovery::ProjectEntry],
+    ) -> usize {
+        // Visibility/archive flags do not uninstall actual links or copies.
         projects.iter()
             .filter(|project| crate::project::is_installed_any_from_path(&project.path, name, source))
             .count()
@@ -943,14 +967,9 @@ impl SkillLibrary {
         let result = (|| -> Result<()> {
             if let Some(override_entry) = self.registry.trigger_overrides.get_mut(&storage_name) {
                 override_entry.source = TriggerSource::read(&staging)?;
-                // Local adaptation carries host instructions separately; an
-                // upstream update must leave its original entry unchanged.
-                if !destination.join("local-data/ADAPTATION.md").is_file() {
-                    override_entry
-                        .source
-                        .render(override_entry.mode)?
-                        .write(&staging)?;
-                }
+                // Native trigger policy also applies to adapted managed skills.
+                // The original upstream entry stays in TriggerOverride for FollowSkill.
+                override_entry.source.render(override_entry.mode)?.write(&staging)?;
             }
             let incoming = crate::update_protection::prepare(&destination, &staging, &baseline, &current)?;
             let prepared = crate::update_protection::snapshot(&staging)?;
@@ -1359,6 +1378,122 @@ impl SkillLibrary {
     }
 }
 
+#[cfg(unix)]
+fn ensure_builtin_skill(library_dir: &Path) -> Result<()> {
+    use crate::package_fs::Directory;
+    use std::{os::fd::AsFd, os::unix::fs::MetadataExt};
+    // A registered library may be reached through a migration compatibility
+    // link. Resolve that root once, then keep all managed children on bound FDs.
+    let physical = library_dir.canonicalize()?;
+    let library = Directory::open_anchored(&physical)?;
+    let check = |directory: &Directory, path: &Path| -> Result<()> {
+        directory.verify_location(path)?;
+        let file = fs::File::from(directory.as_fd().try_clone_to_owned()?);
+        let metadata = file.metadata()?;
+        if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o022 != 0
+            || crate::file_access::Access::read(&file)?.has_acl() {
+            bail!("内置目录需要当前用户独占写入权限且不能含扩展访问规则");
+        }
+        Ok(())
+    };
+    check(&library, &physical)?;
+    library.mkdir(Path::new(KITTER_SKILL_STORAGE))?;
+    let root = library.child(Path::new(KITTER_SKILL_STORAGE))?;
+    check(&root, &physical.join(KITTER_SKILL_STORAGE))?;
+    root.mkdir(Path::new("agents"))?;
+    root.mkdir(Path::new("references"))?;
+    let agents = root.child(Path::new("agents"))?;
+    let references = root.child(Path::new("references"))?;
+    #[cfg(test)]
+    AFTER_BUILTIN_BIND.with(|hook| if let Some(callback) = hook.borrow_mut().take() { callback(); });
+    let guard = || -> Result<()> {
+        if library_dir.canonicalize()? != physical { bail!("技能库入口身份发生变化"); }
+        for (directory, path) in [(&library, physical.clone()),
+            (&root, physical.join(KITTER_SKILL_STORAGE)),
+            (&agents, physical.join(KITTER_SKILL_STORAGE).join("agents")),
+            (&references, physical.join(KITTER_SKILL_STORAGE).join("references"))] {
+            check(directory, &path)?;
+        }
+        Ok(())
+    };
+    guard()?;
+    write_builtin_file(&root, Path::new("SKILL.md"), KITTER_SKILL_MD, &library, &physical, &guard)?;
+    write_builtin_file(&agents, Path::new("openai.yaml"), KITTER_OPENAI_YAML, &library, &physical, &guard)?;
+    write_builtin_file(&references, Path::new("install-cli.md"), KITTER_INSTALL_CLI_MD, &library, &physical, &guard)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn write_builtin_file(directory: &crate::package_fs::Directory, name: &Path, content: &str,
+    library: &crate::package_fs::Directory, physical: &Path, guard: &impl Fn() -> Result<()>) -> Result<()> {
+    use std::{io::{Read, Write}, os::unix::fs::MetadataExt};
+    guard()?;
+    let mut access = None;
+    let prior = match directory.read(name) {
+        Ok(file) => {
+            // Reject hard links even when their bytes already match. The read
+            // is bounded; an oversized managed file is replaced atomically.
+            if file.metadata()?.nlink() != 1 { bail!("内置文件必须是独立实体文件"); }
+            access = Some(crate::file_access::Access::read(&file)?);
+            let mut bytes = Vec::new();
+            let identity = (file.metadata()?.dev(), file.metadata()?.ino());
+            file.take(content.len() as u64 + 1).read_to_end(&mut bytes)?;
+            if bytes == content.as_bytes() { guard()?; return Ok(()); }
+            Some(identity)
+        }
+        Err(error) if crate::package_fs::is_not_found(&error) => None,
+        Err(error) => return Err(error),
+    };
+    // Only an owner-only staging directory contains the temporary name. Keep
+    // displaced versions and failed stages for recovery; never recursively
+    // clean a replaceable path. Public library opens also hold registry.lock.
+    guard()?;
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let stage_name = format!(".pleat-builtin-stage-{}-{}-{}", std::process::id(),
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos(),
+        COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    let stage = library.mkdir_exclusive(Path::new(&stage_name))?;
+    crate::file_access::private_directory(&stage)?;
+    let staged = Path::new("previous");
+    let mut file = stage.create_file(staged, access.as_ref().map_or(0o644, |access| access.mode()))?;
+    if let Some(access) = &access { access.apply(&file)?; }
+    file.write_all(content.as_bytes())?;
+    file.sync_all()?;
+    let metadata = file.metadata()?;
+    let identity = (metadata.dev(), metadata.ino());
+    #[cfg(test)]
+    BEFORE_BUILTIN_COMMIT.with(|hook| if let Some(callback) = hook.borrow_mut().take() {
+        callback(&physical.join(&stage_name).join(staged));
+    });
+    guard()?;
+    stage.verify_location(&physical.join(&stage_name))?;
+    let metadata = stage.read(staged)?.metadata()?;
+    if (metadata.dev(), metadata.ino()) != identity || metadata.nlink() != 1 {
+        bail!("内置临时文件身份发生变化，已保留恢复目录");
+    }
+    let current = match directory.read(name) {
+        Ok(file) => { let m = file.metadata()?; Some((m.dev(), m.ino())) },
+        Err(error) if crate::package_fs::is_not_found(&error) => None,
+        Err(error) => return Err(error),
+    };
+    if current != prior { bail!("内置文件在写入前发生变化，已保留恢复目录"); }
+    if prior.is_some() { stage.exchange_to(staged, directory, name)?; }
+    else { stage.rename_to(staged, directory, name)?; }
+    guard()?;
+    let metadata = directory.read(name)?.metadata()?;
+    if (metadata.dev(), metadata.ino()) != identity || metadata.nlink() != 1 {
+        bail!("内置提交文件身份发生变化，已保留恢复目录");
+    }
+    Ok(())
+}
+
+#[cfg(all(test, unix))]
+thread_local! {
+    static AFTER_BUILTIN_BIND: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+    static BEFORE_BUILTIN_COMMIT: RefCell<Option<Box<dyn FnOnce(&Path)>>> = const { RefCell::new(None) };
+}
+
+#[cfg(not(unix))]
 fn ensure_builtin_skill(library_dir: &Path) -> Result<()> {
     let root = library_dir.join(KITTER_SKILL_STORAGE);
     let agents = root.join("agents");
@@ -1371,11 +1506,167 @@ fn ensure_builtin_skill(library_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(unix))]
 fn write_builtin_file(path: &Path, content: &str) -> Result<()> {
     if fs::read_to_string(path).ok().as_deref() != Some(content) {
         fs::write(path, content)?;
     }
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod builtin_write_guard_tests {
+    use super::*;
+    use std::os::unix::fs::{MetadataExt, symlink};
+
+    #[test]
+    fn builtin_write_guard_rejects_directory_links_without_external_writes() {
+        for relative in [KITTER_SKILL_STORAGE, "_kitter-builtin/agents", "_kitter-builtin/references"] {
+            let temp = tempfile::tempdir().unwrap();
+            let library = temp.path().join("library");
+            let outside = temp.path().join("outside");
+            fs::create_dir_all(&outside).unwrap();
+            let link = library.join(relative);
+            fs::create_dir_all(link.parent().unwrap()).unwrap();
+            fs::write(outside.join("sentinel"), "preserve").unwrap();
+            symlink(&outside, &link).unwrap();
+            assert!(ensure_builtin_skill(&library).is_err());
+            assert_eq!(fs::read_to_string(outside.join("sentinel")).unwrap(), "preserve");
+            assert_eq!(fs::read_dir(&outside).unwrap().count(), 1);
+            assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        }
+    }
+
+    #[test]
+    fn builtin_write_guard_rejects_leaf_links_without_external_writes() {
+        for relative in ["SKILL.md", "agents/openai.yaml", "references/install-cli.md"] {
+            let temp = tempfile::tempdir().unwrap();
+            let library = temp.path().join("library");
+            let leaf = library.join(KITTER_SKILL_STORAGE).join(relative);
+            fs::create_dir_all(leaf.parent().unwrap()).unwrap();
+            let outside = temp.path().join("outside");
+            fs::write(&outside, "preserve").unwrap();
+            let inode = fs::metadata(&outside).unwrap().ino();
+            symlink(&outside, &leaf).unwrap();
+            assert!(ensure_builtin_skill(&library).is_err());
+            assert_eq!(fs::read_to_string(&outside).unwrap(), "preserve");
+            assert_eq!(fs::metadata(&outside).unwrap().ino(), inode);
+            assert!(fs::symlink_metadata(&leaf).unwrap().file_type().is_symlink());
+        }
+    }
+
+    #[test]
+    fn builtin_write_guard_rejects_hardlinks_even_with_expected_bytes() {
+        for (relative, content) in [("SKILL.md", KITTER_SKILL_MD), ("agents/openai.yaml", KITTER_OPENAI_YAML), ("references/install-cli.md", KITTER_INSTALL_CLI_MD)] {
+            let temp = tempfile::tempdir().unwrap();
+            let library = temp.path().join("library");
+            let leaf = library.join(KITTER_SKILL_STORAGE).join(relative);
+            fs::create_dir_all(leaf.parent().unwrap()).unwrap();
+            let outside = temp.path().join("outside");
+            fs::write(&outside, content).unwrap();
+            fs::hard_link(&outside, &leaf).unwrap();
+            assert!(ensure_builtin_skill(&library).is_err());
+            assert_eq!(fs::read_to_string(&outside).unwrap(), content);
+            assert_eq!(fs::metadata(&outside).unwrap().ino(), fs::metadata(&leaf).unwrap().ino());
+        }
+    }
+
+    #[test]
+    fn builtin_write_guard_fifo_is_rejected_without_blocking() {
+        use std::{ffi::CString, os::unix::ffi::OsStrExt};
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        let leaf = library.join(KITTER_SKILL_STORAGE).join("SKILL.md");
+        fs::create_dir_all(leaf.parent().unwrap()).unwrap();
+        let path = CString::new(leaf.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        let start = std::time::Instant::now();
+        assert!(ensure_builtin_skill(&library).is_err());
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[test]
+    fn builtin_write_guard_compatibility_root_and_noop_keep_identities() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        fs::create_dir(&library).unwrap();
+        let legacy = temp.path().join("legacy");
+        symlink(&library, &legacy).unwrap();
+        ensure_builtin_skill(&legacy).unwrap();
+        let leaf = library.join(KITTER_SKILL_STORAGE).join("SKILL.md");
+        let inode = fs::metadata(&leaf).unwrap().ino();
+        let sentinel = library.join(KITTER_SKILL_STORAGE).join("local-data/sentinel");
+        fs::create_dir(sentinel.parent().unwrap()).unwrap();
+        fs::write(&sentinel, "local data").unwrap();
+        ensure_builtin_skill(&legacy).unwrap();
+        assert_eq!(fs::metadata(&leaf).unwrap().ino(), inode);
+        fs::write(&leaf, "outdated builtin").unwrap();
+        ensure_builtin_skill(&legacy).unwrap();
+        assert_eq!(fs::read_to_string(&leaf).unwrap(), KITTER_SKILL_MD);
+        assert_eq!(fs::read_to_string(&sentinel).unwrap(), "local data");
+        assert_eq!(fs::read_link(&legacy).unwrap(), library);
+    }
+
+    #[test]
+    fn builtin_write_guard_rejects_child_moved_after_binding() {
+        for name in ["agents", "references"] {
+            let temp = tempfile::tempdir().unwrap();
+            let library = temp.path().join("library");
+            fs::create_dir(&library).unwrap();
+            let child = library.join(KITTER_SKILL_STORAGE).join(name);
+            let outside = temp.path().join("moved-outside");
+            let moved = outside.clone();
+            AFTER_BUILTIN_BIND.with(|hook| *hook.borrow_mut() = Some(Box::new(move || {
+                fs::rename(&child, &moved).unwrap();
+                fs::create_dir(&child).unwrap();
+            })));
+            assert!(ensure_builtin_skill(&library).is_err());
+            assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+            assert!(!library.join(KITTER_SKILL_STORAGE).join("SKILL.md").exists());
+        }
+    }
+
+    #[test]
+    fn builtin_write_guard_rejects_replaced_stage_without_committing_or_cleaning_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        fs::create_dir(&library).unwrap();
+        let outside = temp.path().join("sentinel");
+        fs::write(&outside, "preserve").unwrap();
+        let target = outside.clone();
+        let recorded = std::rc::Rc::new(RefCell::new(None));
+        let callback_recorded = recorded.clone();
+        BEFORE_BUILTIN_COMMIT.with(|hook| *hook.borrow_mut() = Some(Box::new(move |path| {
+            fs::rename(path, path.with_file_name("original-file")).unwrap();
+            symlink(&target, path).unwrap();
+            *callback_recorded.borrow_mut() = Some(path.to_path_buf());
+        })));
+        assert!(ensure_builtin_skill(&library).is_err());
+        let staged = recorded.borrow().clone().unwrap();
+        assert!(fs::symlink_metadata(&staged).unwrap().file_type().is_symlink());
+        assert!(staged.with_file_name("original-file").is_file());
+        assert!(!library.join(KITTER_SKILL_STORAGE).join("SKILL.md").exists());
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "preserve");
+    }
+
+    #[test]
+    fn builtin_write_guard_rejects_shared_writers_and_preserves_leaf_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        fs::create_dir(&library).unwrap();
+        fs::set_permissions(&library, fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(ensure_builtin_skill(&library).is_err());
+        assert_eq!(fs::read_dir(&library).unwrap().count(), 0);
+        fs::set_permissions(&library, fs::Permissions::from_mode(0o700)).unwrap();
+        ensure_builtin_skill(&library).unwrap();
+        let leaf = library.join(KITTER_SKILL_STORAGE).join("SKILL.md");
+        fs::write(&leaf, "outdated").unwrap();
+        fs::set_permissions(&leaf, fs::Permissions::from_mode(0o600)).unwrap();
+        ensure_builtin_skill(&library).unwrap();
+        assert_eq!(fs::metadata(&leaf).unwrap().mode() & 0o7777, 0o600);
+        assert_eq!(fs::read_to_string(&leaf).unwrap(), KITTER_SKILL_MD);
+    }
 }
 
 fn operation_stamp() -> u64 {
@@ -1520,6 +1811,10 @@ fn protected_data_nodes(root: &Path) -> Result<Vec<PathBuf>> {
 
 // Removed code is recoverable. This also preserves concurrent data writes that
 // arrive after a preflight check, instead of racing a recursive deletion.
+
+
+
+
 fn archive_directory(path: &Path, library_dir: &Path) -> Result<()> {
     let recovery = library_dir.parent().context("技能库目录缺少管理父目录")?
         .join("library-support").join("recovery");
@@ -1589,6 +1884,7 @@ mod tests {
             data_dir,
             disk_revisions: Mutex::new([None, None]),
             proma_sync_warnings: Vec::new(),
+            project_observations: Mutex::new(Vec::new()),
         };
         let skills = library.list().unwrap();
         assert_eq!(skills[0].record.name, KITTER_SKILL_NAME);
@@ -1645,6 +1941,7 @@ mod tests {
             data_dir: root.join("data"),
             disk_revisions: Mutex::new([None, None]),
             proma_sync_warnings: Vec::new(),
+            project_observations: Mutex::new(Vec::new()),
         };
         (temp, library, home)
     }
@@ -1800,6 +2097,30 @@ mod tests {
         fs::write(path.join("agents/openai.yaml"), "interface: locally-edited\n").unwrap();
         assert!(library.set_trigger_mode_by_storage(&record.storage_name, TriggerMode::Automatic).is_err());
         assert_eq!(fs::read_to_string(path.join("agents/openai.yaml")).unwrap(), "interface: locally-edited\n");
+    }
+
+
+
+
+
+
+
+
+
+    #[cfg(unix)]
+    #[test]
+    fn local_import_does_not_authorize_writing_plugin_cache_or_app_bundle() {
+        for relative in [".codex/plugins/cache/plugin/skills/demo", "Some.app/Contents/Resources/skills/demo"] {
+            let temp = tempfile::tempdir().unwrap(); let source = temp.path().join(relative);
+            fixture_skill(&source, "demo");
+            let mut library = SkillLibrary::open_in(temp.path().join("pleat")).unwrap();
+            library.import(&source, SkillRecord { name: "demo".into(), storage_name: String::new(), description: String::new(),
+                origin: SkillOrigin::Local { path: source.clone(), source_root: None }, update_available: false, group_id: None, last_operated_at: 0 }).unwrap();
+            let storage = library.resolve_skill("demo").unwrap().record.storage_name;
+            let before = fs::read(source.join("SKILL.md")).unwrap();
+            assert!(library.set_trigger_mode_by_storage(&storage, TriggerMode::Manual).is_err());
+            assert_eq!(fs::read(source.join("SKILL.md")).unwrap(), before);
+        }
     }
 
     #[test]
@@ -2276,6 +2597,7 @@ mod tests {
             data_dir: temp.path().join("data"),
             disk_revisions: Mutex::new([None, None]),
             proma_sync_warnings: Vec::new(),
+            project_observations: Mutex::new(Vec::new()),
         };
 
         assert_eq!(library.list().unwrap()[0].record.description, "first");

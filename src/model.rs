@@ -204,6 +204,10 @@ pub enum InstallTarget {
     Antigravity,
     Droid,
     Copilot,
+    Trae,
+    WorkBuddy,
+    OpenClaw,
+    Hermes,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

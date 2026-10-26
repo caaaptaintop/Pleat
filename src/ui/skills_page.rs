@@ -1734,7 +1734,7 @@ impl KitterApp {
         };
         let storage_name = skill_storage_name(skill).to_string();
         let skill_path = skill.path.clone();
-        let mut actions = div().flex().gap(px(8.));
+        let mut actions = div().flex().flex_shrink_0().ml(px(14.)).gap(px(8.));
         if skill.record.update_available {
             let update_name = storage_name.clone();
             actions = actions.child(
@@ -1922,6 +1922,7 @@ impl KitterApp {
                     .child(
                         div()
                             .size(px(40.))
+                            .flex_shrink_0()
                             .rounded(px(RADIUS_CONTROL))
                             .bg(p.raised)
                             .flex()
@@ -1933,21 +1934,35 @@ impl KitterApp {
                         div()
                             .ml(px(14.))
                             .min_w_0()
+                            .flex_1()
                             .child(
                                 div()
+                                    .min_w_0()
+                                    .w_full()
                                     .flex()
                                     .items_center()
                                     .gap(px(8.))
                                     .font_family(MONO)
                                     .text_size(px(18.))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child(self.selectable_text(
-                                        "skill-detail-name",
-                                        100,
-                                        skill.record.name.clone(),
-                                        window,
-                                        cx,
-                                    ))
+                                    .child(
+                                        div()
+                                            .id("skill-detail-name-tooltip")
+                                            .min_w_0()
+                                            .flex_1()
+                                            .truncate()
+                                            .child(self.selectable_text(
+                                                "skill-detail-name",
+                                                100,
+                                                skill.record.name.clone(),
+                                                window,
+                                                cx,
+                                            ))
+                                            .tooltip({
+                                                let name = skill.record.name.clone();
+                                                move |window, cx| Tooltip::new(name.clone()).build(window, cx)
+                                            }),
+                                    )
                                     .when(skill.manual_only, |title| {
                                         title.child(self.manual_skill_badge())
                                     }),
@@ -1966,7 +1981,6 @@ impl KitterApp {
                                     )),
                             ),
                     )
-                    .child(div().flex_1())
                     .child(actions),
             )
             .child(description_section)
@@ -2155,7 +2169,8 @@ impl KitterApp {
                 };
                 body = body.child(
                     div()
-                        .h(px(64.))
+                        .min_h(px(64.))
+                        .py(px(12.))
                         .px(px(14.))
                         .border_b_1()
                         .border_color(p.border)

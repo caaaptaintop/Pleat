@@ -578,7 +578,8 @@ mod tests {
             &context(home.clone(), cwd.clone(), repo),
             AgentKind::DimAgent,
         );
-        assert_eq!(result.skills.iter().filter(|s| s.name == "same").count(), 1);
+        assert_eq!(result.skills.iter().filter(|s| s.name == "same").count(), 2);
+        assert_eq!(result.skills.iter().filter(|s| s.name == "same" && s.visibility != SkillVisibility::Shadowed).count(), 1);
         assert_eq!(
             result
                 .skills
@@ -611,12 +612,9 @@ mod tests {
             r#"{"disabledSkillIds":["user:same"]}"#,
         )
         .unwrap();
-        assert!(
-            !estimate(&context, AgentKind::DimAgent)
-                .skills
-                .iter()
-                .any(|s| s.name == "same")
-        );
+        let result = estimate(&context, AgentKind::DimAgent);
+        assert_eq!(result.model_visible_count, 0);
+        assert!(result.skills.iter().filter(|s| s.name == "same").all(|s| s.visibility == SkillVisibility::Shadowed));
     }
 
     #[test]

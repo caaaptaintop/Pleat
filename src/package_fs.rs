@@ -23,6 +23,11 @@ pub(crate) struct Directory {
     path: std::path::PathBuf,
 }
 
+#[cfg(unix)]
+impl std::os::fd::AsFd for Directory {
+    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> { std::os::fd::AsFd::as_fd(&self.file) }
+}
+
 pub(crate) struct FileLock {
     file: fs::File,
     owner: u32,
@@ -184,6 +189,20 @@ impl Directory {
         { let _ = (from, destination, to); bail!("此平台尚未支持 Proma 受管写入") }
     }
 
+    /// Atomic exchange keeps the previous native configuration available for
+    /// identity validation and recovery without a missing-file window.
+    pub(crate) fn exchange_to(&self, from: &Path, destination: &Self, to: &Path) -> Result<()> {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            let (from_parent, from_name) = self.parent(from, false)?;
+            let (to_parent, to_name) = destination.parent(to, false)?;
+            rustix::fs::renameat_with(&from_parent, from_name.as_str(), &to_parent, to_name.as_str(), rustix::fs::RenameFlags::EXCHANGE)?;
+            Ok(())
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        { let _ = (from, destination, to); bail!("此平台尚未支持原生配置原子交换"); }
+    }
+
     pub(crate) fn observation(&self, path: &Path) -> Result<String> {
         #[cfg(unix)]
         {
@@ -334,6 +353,13 @@ impl Directory {
             bail!("包节点不是普通文件");
         }
         Ok(file)
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn mkdir_exclusive(&self, path: &Path) -> Result<Self> {
+        let (parent, name) = self.parent(path, false)?;
+        rustix::fs::mkdirat(&parent, name.as_str(), Mode::from_raw_mode(0o700))?;
+        self.child(path)
     }
 
     pub(crate) fn mkdir(&self, path: &Path) -> Result<()> {

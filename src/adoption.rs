@@ -429,7 +429,8 @@ const EXTRA_DIRECT_ROOTS: &[&str] = &[
 fn skill_root(path: &Path) -> bool {
     crate::agents::PROJECT_INSTALL_TARGETS
         .iter()
-        .any(|target| path.ends_with(crate::agents::target_directory(*target)))
+        .any(|target| crate::agents::project_target_directory(*target).is_ok_and(|suffix| path.ends_with(suffix))
+            || dirs::home_dir().is_some_and(|home| crate::agents::global_target_root(&home, *target).is_ok_and(|root| path == root)))
         || EXTRA_DIRECT_ROOTS
             .iter()
             .any(|suffix| path.ends_with(suffix))
@@ -437,9 +438,10 @@ fn skill_root(path: &Path) -> bool {
 
 fn agent_directory(path: &Path) -> bool {
     crate::agents::PROJECT_INSTALL_TARGETS.iter().any(|target| {
-        Path::new(crate::agents::target_directory(*target))
-            .parent()
-            .is_some_and(|parent| path.ends_with(parent))
+        crate::agents::project_target_directory(*target).ok().is_some_and(|suffix|
+            suffix.parent().is_some_and(|parent| path.ends_with(parent)))
+            || dirs::home_dir().is_some_and(|home| crate::agents::global_target_root(&home, *target)
+                .is_ok_and(|root| root.parent() == Some(path)))
     }) || EXTRA_DIRECT_ROOTS.iter().any(|root| {
         Path::new(root)
             .parent()
@@ -447,7 +449,7 @@ fn agent_directory(path: &Path) -> bool {
     })
 }
 
-fn plugin_path(path: &Path) -> bool {
+pub(crate) fn plugin_path(path: &Path) -> bool {
     // Applies to project-local caches as well as global ones, including link targets.
     let components = path
         .components()

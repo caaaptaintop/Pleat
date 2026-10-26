@@ -75,6 +75,22 @@ pub(super) struct ProjectAgentFilter {
 }
 
 impl ProjectAgentFilter {
+    pub(super) fn agent_available(
+        kind: AgentKind,
+        installed: &[crate::agents::AgentIconInfo],
+        entries: &[crate::project_discovery::ProjectEntry],
+    ) -> bool {
+        crate::agents::project_agent_available(kind, installed, entries)
+    }
+
+    pub(super) fn retain_available(
+        &mut self,
+        installed: &[crate::agents::AgentIconInfo],
+        entries: &[crate::project_discovery::ProjectEntry],
+    ) {
+        self.agents.retain(|kind| Self::agent_available(*kind, installed, entries));
+    }
+
     pub(super) fn is_all(&self) -> bool {
         self.agents.is_empty() && !self.unmarked
     }
@@ -145,6 +161,7 @@ pub(super) struct ProjectsState {
     pub expanded_project_plugins: HashSet<String>,
     pub selected_skill_source: Option<(PathBuf, SkillSourceGroup)>,
     pub project_search: Entity<InputState>,
+    pub effective_skill_search: Entity<InputState>,
     pub project_agent_filter: ProjectAgentFilter,
     pub list_view: ProjectListView,
     pub project_select: Entity<SelectState<Vec<ProjectChoice>>>,
@@ -215,4 +232,32 @@ pub(super) struct GroupsFlowState {
     pub delete_pending: Option<String>,
     pub delete_skills: bool,
     pub move_skills: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AgentKind, ProjectAgentFilter};
+    use crate::project_discovery::ProjectEntry;
+
+    #[test]
+    fn native_project_filter_does_not_require_detected_runtime() {
+        let entry = ProjectEntry {
+            path: "/owned-native-project".into(), name: "owned-native-project".into(),
+            agents: vec![AgentKind::Amp], proma_workspaces: Vec::new(),
+            native_workspaces: Vec::new(), archive_states: Vec::new(),
+            archived: false, hidden: true, retained: false,
+        };
+        let mut filter = ProjectAgentFilter {
+            agents: vec![AgentKind::Amp, AgentKind::Cursor], unmarked: false,
+        };
+        let entries = [entry];
+        filter.retain_available(&[], &entries);
+        assert_eq!(filter.agents, [AgentKind::Amp]);
+        assert!(filter.matches(&entries[0]));
+        assert!(ProjectAgentFilter::agent_available(AgentKind::Amp, &[], &entries));
+        assert!(!ProjectAgentFilter::agent_available(AgentKind::Cursor, &[], &entries));
+        let codex = crate::agents::AGENT_ICON_ORDER.iter().copied()
+            .find(|agent| agent.id == "codex").unwrap();
+        assert!(ProjectAgentFilter::agent_available(AgentKind::Codex, &[codex], &[]));
+    }
 }

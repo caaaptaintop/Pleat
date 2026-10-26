@@ -188,11 +188,15 @@ impl KitterApp {
         let project_agents = crate::project_discovery::agents_for_project(
             path, crate::agents::AGENT_ICON_ORDER, &self.projects_view.discovered_projects,
         );
+        let available_agents = self.available_project_agents();
+        let identity = crate::project_discovery::project_identity(path, &self.projects_view.discovered_projects);
+        let associated = self.all_project_entries().into_iter().find(|entry| entry.path == identity)
+            .map(|entry| entry.agents).unwrap_or_default();
         let unavailable = project_agents.iter().filter_map(|info| {
             let agent = AgentKind::from_id(info.id)?;
             (!estimates.iter().any(|estimate| estimate.agent == agent)).then_some(AgentContextEstimate {
                 agent, discovered_count: 0, model_visible_count: 0, manual_only_count: 0,
-                name_only_count: 0, conditional_count: 0, estimated_tokens: 0, skills: Vec::new(),
+                name_only_count: 0, conditional_count: 0, estimated_tokens: 0, skills: Vec::new(), diagnostic: None,
             })
         }).collect::<Vec<_>>();
         let mut ordered_estimates = estimates
@@ -208,7 +212,7 @@ impl KitterApp {
             .collect::<Vec<_>>();
         ordered_estimates.sort_by_key(|estimate| {
             crate::agents::display_sort_key(estimate.agent.label(),
-                self.model.installed_agents.iter().any(|agent| agent.id == estimate.agent.id()))
+                available_agents.iter().any(|agent| agent.id == estimate.agent.id()))
         });
         let expanded = self.projects_view.project_agents_expanded;
         let selected_agent = self.projects_view.selected_project_agent;
@@ -217,7 +221,8 @@ impl KitterApp {
         let mut summary_agents = ordered_estimates
             .iter()
             .filter(|estimate| {
-                estimate.discovered_count > 0 || selected_agent == Some(estimate.agent)
+                estimate.discovered_count > 0 || estimate.diagnostic.is_some()
+                    || associated.contains(&estimate.agent) || selected_agent == Some(estimate.agent)
             })
             .take(4)
             .map(|estimate| estimate.agent)
@@ -293,8 +298,8 @@ impl KitterApp {
                 continue;
             }
             let agent = estimate.agent;
-            let installed = self.model.installed_agents.iter().any(|info| info.id == agent.id());
-            let has_estimate = installed && estimates.iter().any(|item| item.agent == agent);
+            let available = available_agents.iter().any(|info| info.id == agent.id());
+            let has_estimate = available && estimate.diagnostic.is_none() && estimates.iter().any(|item| item.agent == agent);
             let selected = self.projects_view.selected_project_agent == Some(agent);
             let automatic_count = estimate
                 .model_visible_count
@@ -306,7 +311,7 @@ impl KitterApp {
             else {
                 continue;
             };
-            let severity = if !has_estimate { p.muted } else if estimate.estimated_tokens >= CONTEXT_TOKEN_DANGER_THRESHOLD
+            let severity = if estimate.diagnostic.is_some() { p.warning } else if !has_estimate { p.muted } else if estimate.estimated_tokens >= CONTEXT_TOKEN_DANGER_THRESHOLD
                 || automatic_count >= CONTEXT_COUNT_DANGER_THRESHOLD
             {
                 p.danger
@@ -317,8 +322,10 @@ impl KitterApp {
             } else {
                 p.success
             };
-            let automatic = if !installed {
-                self.tr("未安装", "Not installed").to_string()
+            let automatic = if !available {
+                self.tr("未检测到", "Not detected").to_string()
+            } else if estimate.diagnostic.is_some() {
+                self.tr("无法确认", "Unknown").to_string()
             } else if !has_estimate {
                 if agent == AgentKind::Proma && is_global_context {
                     self.tr("仅项目可用", "Project only").to_string()
@@ -378,7 +385,7 @@ impl KitterApp {
                             .items_center()
                             .gap(px(8.))
                             .text_size(px(11.))
-                            .text_color(if installed { p.secondary } else { p.muted })
+                            .text_color(if available { p.secondary } else { p.muted })
                             .child(
                                 div()
                                     .size(px(18.))
@@ -389,7 +396,7 @@ impl KitterApp {
                                     .child(self.agent_status_icon(
                                         icon,
                                         Self::brand_icon_size(icon, 15.),
-                                        installed,
+                                        available,
                                     )),
                             )
                             .child(
@@ -456,7 +463,14 @@ impl KitterApp {
                     .pt(px(4.))
                     .px(px(6.))
                     .child(header)
-                    .child(cards),
+                    .child(cards)
+                    .when(estimates.iter().any(|estimate| estimate.diagnostic.is_some()), |panel| {
+                        panel.child(div().text_size(px(11.)).text_color(p.warning).py(px(4.))
+                            .child(format!("{}：{}", estimates.iter()
+                                .filter(|estimate| estimate.diagnostic.is_some())
+                                .map(|estimate| estimate.agent.label()).collect::<Vec<_>>().join(" · "),
+                                self.tr("技能生效状态无法确认；仅展示已知候选", "Skill availability is unknown; only known candidates are shown"))))
+                    }),
             );
         let expand_control = div()
             .h(px(28.))
@@ -521,8 +535,8 @@ impl KitterApp {
                     .text_size(px(10.))
                     .text_color(p.muted)
                     .child(if is_global_context { self.tr(
-                        "未安装的 Agent 显示为灰色 · 技能与 Token 为已安装 Agent 的目录扫描估算",
-                        "Uninstalled Agents are gray · Skills and tokens are estimated for installed Agents",
+                        "灰色 Agent 暂不可管理 · 技能与 Token 为目录扫描估算",
+                        "Gray agents are unavailable · Skills and tokens are directory-scan estimates",
                     ) } else { self.tr(
                         "按项目关联 Agent 统计，含其全局技能 · 未登记项目按兼容性扫描",
                         "Associated Agents and their global skills · Unregistered projects use compatibility scanning",
@@ -920,6 +934,8 @@ impl KitterApp {
             div()
                 .id(id)
                 .debug_selector(move || id.into())
+                .role(Role::Button)
+                .aria_label(label)
                 .h(px(ROW_HEIGHT))
                 .px(px(8.))
                 .rounded(px(RADIUS_LIST_ROW))

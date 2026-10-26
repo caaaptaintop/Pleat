@@ -9,6 +9,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use kitter::{
     InstallTarget, ProjectSkill, ProjectSkillInstallation, SkillGroup, SkillLibrary, SkillSummary,
+    TriggerMode,
     adoption,
     effective_skills::{self, AgentContextEstimate, AgentKind, group_effective_skills},
     project, proma, source,
@@ -40,6 +41,16 @@ enum Command {
     /// Show one skill by name or ID
     Show {
         skill: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show or set trigger modes by unique name or id:<storage-name>
+    Trigger {
+        #[arg(required = true)]
+        skills: Vec<String>,
+        /// Omit to inspect without changing the library
+        #[arg(long, value_enum)]
+        mode: Option<TriggerModeArg>,
         #[arg(long)]
         json: bool,
     },
@@ -98,6 +109,9 @@ enum Command {
     Projects {
         #[arg(long)]
         json: bool,
+        /// Include archived and manually hidden projects
+        #[arg(long)]
+        all: bool,
     },
     /// Inspect direct and effective skills for a project
     Project {
@@ -138,11 +152,14 @@ enum Command {
         #[command(subcommand)]
         action: TagAction,
     },
-    /// Show or switch the skill library
+    /// Show, switch or move the skill library
     Library {
         /// Switch to an existing nonempty skill library
         #[arg(long, value_name = "PATH")]
         set: Option<PathBuf>,
+        /// Move the current library and keep its compatibility alias
+        #[arg(long = "move", value_name = "PATH", conflicts_with = "set")]
+        move_to: Option<PathBuf>,
     },
 }
 
@@ -318,6 +335,23 @@ enum TagAction {
 }
 
 #[derive(Clone, Copy, ValueEnum)]
+enum TriggerModeArg {
+    FollowSkill,
+    Manual,
+    Automatic,
+}
+
+impl From<TriggerModeArg> for TriggerMode {
+    fn from(value: TriggerModeArg) -> Self {
+        match value {
+            TriggerModeArg::FollowSkill => Self::FollowSkill,
+            TriggerModeArg::Manual => Self::Manual,
+            TriggerModeArg::Automatic => Self::Automatic,
+        }
+    }
+}
+
+#[derive(Clone, Copy, ValueEnum)]
 enum TargetArg {
     Universal,
     Codex,
@@ -331,6 +365,10 @@ enum TargetArg {
     Antigravity,
     Droid,
     Copilot,
+    Trae,
+    Workbuddy,
+    Openclaw,
+    Hermes,
 }
 
 impl From<TargetArg> for InstallTarget {
@@ -348,6 +386,10 @@ impl From<TargetArg> for InstallTarget {
             TargetArg::Antigravity => Self::Antigravity,
             TargetArg::Droid => Self::Droid,
             TargetArg::Copilot => Self::Copilot,
+            TargetArg::Trae => Self::Trae,
+            TargetArg::Workbuddy => Self::WorkBuddy,
+            TargetArg::Openclaw => Self::OpenClaw,
+            TargetArg::Hermes => Self::Hermes,
         }
     }
 }
@@ -369,6 +411,8 @@ enum AgentArg {
     Grok,
     Openclaw,
     Hermes,
+    Trae,
+    Workbuddy,
 }
 
 impl From<AgentArg> for AgentKind {
@@ -389,6 +433,8 @@ impl From<AgentArg> for AgentKind {
             AgentArg::Grok => Self::Grok,
             AgentArg::Openclaw => Self::OpenClaw,
             AgentArg::Hermes => Self::Hermes,
+            AgentArg::Trae => Self::Trae,
+            AgentArg::Workbuddy => Self::WorkBuddy,
         }
     }
 }
@@ -432,6 +478,19 @@ struct ProjectOutput {
     path: PathBuf,
     direct_installations: Vec<ProjectSkill>,
     agents: Vec<AgentContextEstimate>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    native_invocations: Vec<NativeInvocationOutput>,
+}
+
+#[derive(Serialize)]
+struct NativeInvocationOutput {
+    agent: &'static str,
+    native_id: String,
+    source_path: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    invocation: Option<kitter::GrokInvocation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -450,6 +509,10 @@ struct TagOutput {
 }
 
 fn main() {
+    kitter::run_native_adaptation_reader_if_requested();
+    if let Some(code) = kitter::project_discovery::run_metadata_worker() {
+        std::process::exit(code);
+    }
     if let Err(error) = run() {
         eprintln!("error: {error:#}");
         std::process::exit(1);
@@ -459,12 +522,23 @@ fn main() {
 fn run() -> Result<()> {
     let command = match Cli::parse().command {
         Command::Proma { action } => return manage_proma(action),
+        Command::Trigger {
+            skills,
+            mode: None,
+            json,
+        } => {
+            let (mut library, _snapshot) = open_library_snapshot(&kitter::config::app_data_dir())?;
+            return manage_trigger(&mut library, &skills, None, json);
+        }
         command => command,
     };
     let mut library = SkillLibrary::open()?;
     match command {
         Command::List { tag, json } => list_skills(&library, tag.as_deref(), json),
         Command::Show { skill, json } => show_skill(&library, &skill, json),
+        Command::Trigger { skills, mode, json } => {
+            manage_trigger(&mut library, &skills, mode.map(Into::into), json)
+        }
         Command::Files { skill } => {
             let skill = library.resolve_skill(&skill)?;
             for file in library.files_by_storage(&skill.record.storage_name)? {
@@ -514,10 +588,10 @@ fn run() -> Result<()> {
             json,
         } => inspect_project(&library, &path, agent, view, json),
         Command::Proma { .. } => unreachable!("Proma commands are handled before library opening"),
-        Command::Projects { json } => {
+        Command::Projects { json, all } => {
             let discovered = kitter::project_discovery::discover_agent_projects()?;
             let projects = library.config.project_entries(&discovered)
-                .into_iter().filter(kitter::project_discovery::ProjectEntry::is_active).collect::<Vec<_>>();
+                .into_iter().filter(|entry| all || entry.is_active()).collect::<Vec<_>>();
             if json {
                 println!("{}", serde_json::to_string_pretty(&projects)?);
             } else {
@@ -539,7 +613,7 @@ fn run() -> Result<()> {
         }
         Command::Group { action } => manage_groups(&mut library, action),
         Command::Tag { action } => manage_tags(&library, action),
-        Command::Library { set } => manage_library(&mut library, set),
+        Command::Library { set, move_to } => manage_library(&mut library, set, move_to),
     }
 }
 
@@ -631,6 +705,74 @@ fn show_skill(library: &SkillLibrary, selector: &str, json: bool) -> Result<()> 
         if !skill.tags.is_empty() {
             println!("Tags: {}", skill.tags.join(", "));
         }
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct TriggerOutput {
+    selector: String,
+    name: Option<String>,
+    storage_name: Option<String>,
+    mode: Option<TriggerMode>,
+    changed: bool,
+    error: Option<String>,
+}
+
+fn manage_trigger(
+    library: &mut SkillLibrary,
+    selectors: &[String],
+    mode: Option<TriggerMode>,
+    json: bool,
+) -> Result<()> {
+    let mut output = Vec::new();
+    for selector in selectors {
+        let mut item = TriggerOutput {
+            selector: selector.clone(),
+            name: None,
+            storage_name: None,
+            mode: None,
+            changed: false,
+            error: None,
+        };
+        match library.resolve_skill(selector) {
+            Ok(skill) => {
+                let storage = &skill.record.storage_name;
+                item.name = Some(skill.record.name.clone());
+                item.storage_name = Some(storage.clone());
+                if let Some(mode) = mode {
+                    match library.apply_trigger_mode_by_storage(storage, mode) {
+                        Ok(changed) => item.changed = changed,
+                        Err(error) => item.error = Some(format!("{error:#}")),
+                    }
+                }
+                item.mode = Some(library.trigger_mode_by_storage(storage));
+            }
+            Err(error) => item.error = Some(format!("{error:#}")),
+        }
+        output.push(item);
+    }
+    if json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        for item in &output {
+            let storage = item.storage_name.as_deref().unwrap_or(&item.selector);
+            if let Some(error) = &item.error {
+                println!("{storage}: error: {error}");
+            } else {
+                let mode = match item.mode.expect("resolved skill has a trigger mode") {
+                    TriggerMode::FollowSkill => "follow-skill",
+                    TriggerMode::Manual => "manual",
+                    TriggerMode::Automatic => "automatic",
+                };
+                let status = if item.changed { "changed" } else { "unchanged" };
+                println!("{storage}: {mode} ({status})");
+            }
+        }
+    }
+    let failures = output.iter().filter(|item| item.error.is_some()).count();
+    if failures > 0 {
+        bail!("{failures} trigger operation(s) failed; see per-skill results");
     }
     Ok(())
 }
@@ -931,7 +1073,7 @@ fn uninstall_skills(
             unsafe_paths.join(", ")
         );
     }
-    let report = project::remove_project_skills(&selected);
+    let report = project::remove_project_skills_at(&project_path, &selected);
     finish_batch("Removed", "installation", report.removed, report.failures)
 }
 
@@ -945,7 +1087,11 @@ fn inspect_project(
     let path = canonical_project(path)?;
     let direct = project::list(&path, &library.config.library_dir)?;
     let selected_agent = agent.map(AgentKind::from);
-    let mut estimates = effective_skills::estimate_project(&path)
+    let snapshots = match selected_agent {
+        Some(agent) => effective_skills::estimate_project_for_explicit_agent(&path, agent),
+        None => effective_skills::estimate_project(&path),
+    };
+    let mut estimates = snapshots
         .into_iter()
         .filter(|estimate| selected_agent.is_none_or(|agent| estimate.agent == agent))
         .collect::<Vec<_>>();
@@ -957,12 +1103,29 @@ fn inspect_project(
         });
     }
     if json {
+        let native_invocations = estimates.iter().filter(|estimate| estimate.agent == AgentKind::Grok)
+            .flat_map(|estimate| &estimate.skills)
+            .filter(|skill| skill.user_invocable
+                && matches!(skill.source, effective_skills::SkillSource::Filesystem)
+                && matches!(skill.visibility, effective_skills::SkillVisibility::Automatic | effective_skills::SkillVisibility::ManualOnly))
+            .map(|skill| {
+                let result = if skill.id.contains(':') {
+                    kitter::grok_invocation(&path, skill, None)
+                } else { Err(anyhow::anyhow!("宿主未提供可核验的技能调用标识")) };
+                let (invocation, error) = match result {
+                    Ok(invocation) => (invocation, None),
+                    Err(error) => (None, Some(error.to_string())),
+                };
+                NativeInvocationOutput { agent: "grok", native_id: skill.id.clone(),
+                    source_path: skill.path.clone(), invocation, error }
+            }).collect();
         println!(
             "{}",
             serde_json::to_string_pretty(&ProjectOutput {
                 path,
                 direct_installations: direct,
                 agents: estimates,
+                native_invocations,
             })?
         );
         return Ok(());
@@ -997,6 +1160,10 @@ fn inspect_project(
     }
     println!("Agents:");
     for estimate in &estimates {
+        if let Some(diagnostic) = &estimate.diagnostic {
+            println!("  {:<18} unknown: {}", estimate.agent.label(), diagnostic.message);
+            continue;
+        }
         println!(
             "  {:<18} {:>3} discovered  {:>3} visible  ~{} tokens",
             estimate.agent.label(),
@@ -1010,7 +1177,9 @@ fn inspect_project(
             .iter()
             .flat_map(|estimate| estimate.skills.iter().map(|skill| (estimate.agent, skill))),
     );
-    println!("Effective skills: {}", effective.len());
+    if estimates.iter().any(|estimate| estimate.diagnostic.is_some()) {
+        println!("Effective skills: unavailable; any entries below are a partial inventory");
+    } else { println!("Effective skills: {}", effective.len()); }
     for group in effective {
         let agents = group
             .entries()
@@ -1213,7 +1382,18 @@ fn manage_tags(library: &SkillLibrary, action: TagAction) -> Result<()> {
     save_tag_states(&skill_tags, &project_tags)
 }
 
-fn manage_library(library: &mut SkillLibrary, set: Option<PathBuf>) -> Result<()> {
+fn manage_library(
+    library: &mut SkillLibrary,
+    set: Option<PathBuf>,
+    move_to: Option<PathBuf>,
+) -> Result<()> {
+    if let Some(path) = move_to {
+        if !path.is_absolute() {
+            bail!("请使用绝对路径");
+        }
+        let plan = library.plan_storage_change(kitter::library::StorageAction::MoveLibrary, &path)?;
+        library.apply_storage_change(&plan)?;
+    }
     if let Some(path) = set {
         if !path.is_absolute() {
             bail!("请使用绝对路径");
@@ -1552,7 +1732,7 @@ mod tests {
         assert!(Cli::try_parse_from(["kitter", "config", "set-theme", "dark"]).is_err());
         let cli = Cli::try_parse_from(["kitter", "library", "--set", "/tmp/skills"])
             .expect("skill library location should remain configurable");
-        let Command::Library { set } = cli.command else {
+        let Command::Library { set, .. } = cli.command else {
             panic!("expected library command");
         };
         assert_eq!(set.unwrap(), std::path::PathBuf::from("/tmp/skills"));
@@ -1580,14 +1760,106 @@ mod tests {
         let target = root.join("existing");
         std::fs::create_dir_all(target.join("demo")).unwrap();
         std::fs::write(target.join("demo/SKILL.md"), "different target fixture").unwrap();
-        manage_library(&mut library, Some(target.clone())).unwrap();
+        manage_library(&mut library, Some(target.clone()), None).unwrap();
         assert!(matches!(library.record_by_storage("demo").unwrap().origin, kitter::SkillOrigin::Unknown));
         assert_eq!(std::fs::read(old_skill.join("SKILL.md")).unwrap(), b"old fixture skill");
         let reopened = SkillLibrary::open_in(&data).unwrap();
         assert!(matches!(reopened.record_by_storage("demo").unwrap().origin, kitter::SkillOrigin::Unknown));
-        assert!(manage_library(&mut library, Some(root.join("empty"))).is_err());
+        assert!(manage_library(&mut library, Some(root.join("empty")), None).is_err());
         assert!(!root.join("empty").exists());
         assert_eq!(library.config.library_dir, target);
+    }
+
+    #[test]
+    fn library_move_is_parsed_and_conflicts_with_set() {
+        let cli = Cli::try_parse_from(["kitter", "library", "--move", "/tmp/moved-skills"])
+            .expect("library move should be a public CLI operation");
+        let Command::Library { set, move_to } = cli.command else {
+            panic!("expected library command");
+        };
+        assert!(set.is_none());
+        assert_eq!(move_to.unwrap(), std::path::PathBuf::from("/tmp/moved-skills"));
+        assert!(Cli::try_parse_from([
+            "kitter", "library", "--set", "/tmp/existing", "--move", "/tmp/moved-skills",
+        ]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn library_move_cli_preserves_payload_local_data_and_installed_link() {
+        use super::{SkillLibrary, manage_library};
+        use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let data = root.join("data");
+        let mut library = SkillLibrary::open_in(&data).unwrap();
+        let template = root.join("template");
+        std::fs::create_dir(&template).unwrap();
+        let body = b"---\nname: demo\ndescription: Owned move fixture\n---\nOwned body\n";
+        std::fs::write(template.join("SKILL.md"), body).unwrap();
+        library.import(&template, kitter::SkillRecord {
+            name: "demo".into(), storage_name: "demo".into(), description: String::new(),
+            origin: kitter::SkillOrigin::Unknown, update_available: false,
+            group_id: None, last_operated_at: 0,
+        }).unwrap();
+        // Reconcile the imported source before taking the migration baseline,
+        // just as opening the library for a separate CLI invocation does.
+        library = SkillLibrary::open_in(&data).unwrap();
+        let old = library.config.library_dir.clone();
+        let skill = library.skill_path("demo").unwrap();
+        std::fs::create_dir_all(skill.join("local-data")).unwrap();
+        std::fs::write(skill.join("local-data/ADAPTATION.md"), b"Owned adaptation\n").unwrap();
+        std::fs::write(skill.join("local-data/sentinel.bin"), b"private\x00\xff").unwrap();
+        std::fs::set_permissions(skill.join("local-data/sentinel.bin"),
+            std::fs::Permissions::from_mode(0o751)).unwrap();
+        let identity = |path: &std::path::Path| {
+            let info = std::fs::symlink_metadata(path).unwrap();
+            (info.dev(), info.ino(), info.uid(), info.mode())
+        };
+        let old_identity = identity(&old);
+        let files = ["SKILL.md", "local-data/ADAPTATION.md", "local-data/sentinel.bin"];
+        let before = files.map(|relative| {
+            let path = skill.join(relative);
+            (std::fs::read(&path).unwrap(), identity(&path))
+        });
+        let installation = root.join("installed-demo");
+        symlink(&skill, &installation).unwrap();
+        let installation_identity = identity(&installation);
+        let installation_target = std::fs::read_link(&installation).unwrap();
+        let registry: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(data.join("registry.json")).unwrap()).unwrap();
+        let target = root.join("library-moved");
+        let cli = Cli::try_parse_from([
+            "kitter", "library", "--move", target.to_str().unwrap(),
+        ]).unwrap();
+        let Command::Library { set, move_to } = cli.command else {
+            panic!("expected library command");
+        };
+        manage_library(&mut library, set, move_to).unwrap();
+        assert_eq!(library.config.library_dir, target);
+        assert_eq!(identity(&target), old_identity);
+        assert!(std::fs::symlink_metadata(&old).unwrap().file_type().is_symlink());
+        assert_eq!(old.canonicalize().unwrap(), target);
+        assert_eq!(identity(&installation), installation_identity);
+        assert_eq!(std::fs::read_link(&installation).unwrap(), installation_target);
+        let after_move: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(data.join("registry.json")).unwrap()).unwrap();
+        assert_eq!(after_move, registry);
+        let reopened = SkillLibrary::open_in(&data).unwrap();
+        assert_eq!(reopened.config.library_dir, target);
+        let moved_skill = reopened.skill_path("demo").unwrap();
+        assert!(moved_skill.starts_with(&target));
+        for (relative, (bytes, file_identity)) in files.iter().zip(before.iter()) {
+            let moved = moved_skill.join(relative);
+            assert_eq!(std::fs::read(&moved).unwrap(), *bytes);
+            assert_eq!(identity(&moved), *file_identity);
+            assert_eq!(std::fs::read(installation.join(relative)).unwrap(), *bytes);
+            assert_eq!(std::fs::read(skill.join(relative)).unwrap(), *bytes);
+        }
+        let after: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(data.join("registry.json")).unwrap()).unwrap();
+        assert_eq!(after, registry);
+        assert_eq!(std::fs::read(template.join("SKILL.md")).unwrap(), body);
     }
 
     #[test]

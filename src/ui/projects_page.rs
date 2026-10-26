@@ -16,6 +16,75 @@ fn selected_project_skills(
 }
 
 impl KitterApp {
+    fn project_skills_tabs_with_diagnostic(
+        &self,
+        skill_count: usize,
+        plugin_skill_count: usize,
+        incomplete: bool,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        if !incomplete {
+            return self.project_skills_tabs(skill_count, plugin_skill_count, cx);
+        }
+        let p = self.palette();
+        let mut tabs = div()
+            .h(px(43.))
+            .px(px(28.))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(16.))
+            .border_b_1()
+            .border_color(p.border);
+        for (tab, label, count) in [
+            (ProjectSkillsTab::Skills, self.tr("技能", "Skills"), skill_count),
+            (ProjectSkillsTab::Plugins, self.tr("插件", "Plugins"), plugin_skill_count),
+        ] {
+            let selected = self.projects_view.project_skills_tab == tab;
+            tabs = tabs.child(
+                div()
+                    .id(ElementId::Name(format!("project-skills-tab-{}",
+                        if tab == ProjectSkillsTab::Skills { "skills" } else { "plugins" }).into()))
+                    .h(px(43.))
+                    .px(px(2.))
+                    .border_b_1()
+                    .border_color(if selected { p.accent } else { rgba(0x00000000) })
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .cursor_pointer()
+                    .text_size(px(12.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(if selected { p.text } else { p.muted })
+                    .child(label)
+                    .child(
+                        div()
+                            .font_family(MONO)
+                            .text_size(px(10.))
+                            .font_weight(FontWeight::NORMAL)
+                            .text_color(p.muted)
+                            .child(if count == 0 {
+                                self.tr("未知", "Unknown").to_string()
+                            } else if self.uses_english() {
+                                format!("{count} (partial)")
+                            } else {
+                                format!("{count}（部分）")
+                            }),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.projects_view.project_skills_tab = tab;
+                        if tab == ProjectSkillsTab::Plugins {
+                            this.projects_view.batch_project = None;
+                            this.projects_view.batch_selected.clear();
+                            this.projects_view.batch_filter = None;
+                        }
+                        cx.notify();
+                    })),
+            );
+        }
+        tabs
+    }
+
     fn project_batch_action_label(&self, action: ProjectBatchAction) -> &'static str {
         match action {
             ProjectBatchAction::Remove => self.tr("卸载用户技能", "Uninstall user skills"),
@@ -162,6 +231,7 @@ impl KitterApp {
             let label = match group {
                 SkillSourceGroup::Origin(origin) => self.skill_origin_label(origin, self.projects_view.global_project_view),
                 SkillSourceGroup::Multiple => self.tr("多种来源", "Multiple sources"),
+                SkillSourceGroup::Unknown => self.tr("来源未知", "Unknown source"),
             };
             let project = project.to_path_buf();
             tabs = tabs.child(gpui_base::Button::new(ElementId::Name(format!("project-skill-source-{key}").into()))
@@ -813,6 +883,25 @@ impl KitterApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let p = self.palette();
+        if effective.is_metadata_only() {
+            let hint = effective.native_hint.clone().unwrap_or_default();
+            let detail = format!("{}\n{}", effective.description, hint);
+            return div().id(ElementId::Name(effective.key.clone().into()))
+                .w_full().min_h(px(84.)).px(px(32.)).py(px(10.))
+                .border_b_1().border_color(p.border).flex().flex_col().gap(px(3.))
+                .child(div().flex().items_center().gap(px(10.))
+                    .child(div().font_family(MONO).text_size(px(13.)).child(effective.name.clone()))
+                    .child(div().text_size(px(11.)).text_color(p.muted)
+                        .child(format!("{} · {}", self.tr("仅原生元数据，状态未知", "Native metadata only, unknown state"),
+                            effective.agents.iter().map(|agent| agent.label()).collect::<Vec<_>>().join(" / ")))))
+                .child(div().text_size(px(12.)).text_color(p.secondary).truncate().child(effective.description.clone()))
+                .child(div().text_size(px(11.)).text_color(p.muted).truncate().child(hint))
+                .tooltip(move |window, cx| {
+                    let detail = detail.clone();
+                    Tooltip::element(move |_, _| div().w(px(420.)).max_w(px(420.))
+                        .whitespace_normal().text_size(px(12.)).child(detail.clone())).build(window, cx)
+                }).into_any_element();
+        }
         let inactive = effective.is_inactive();
         let managed = effective
             .direct_installations
@@ -931,6 +1020,26 @@ impl KitterApp {
                             .when(effective.manual_only, |title| {
                                 title.child(self.manual_skill_badge().ml(px(10.)))
                             })
+                            .when(!effective.shadowed_agents.is_empty(), |title| {
+                                title.child(div().ml(px(8.)).text_size(px(11.)).text_color(p.muted)
+                                    .child(format!("{}: {}", self.tr("被同名来源覆盖", "Shadowed"),
+                                        effective.shadowed_agents.iter().map(|agent| agent.label()).collect::<Vec<_>>().join(" / "))))
+                            })
+                            .when(!effective.disabled_agents.is_empty(), |title| {
+                                title.child(div().ml(px(8.)).text_size(px(11.)).text_color(p.muted)
+                                    .child(format!("{}: {}", self.tr("已禁用", "Disabled"),
+                                        effective.disabled_agents.iter().map(|agent| agent.label()).collect::<Vec<_>>().join(" / "))))
+                            })
+                            .when(!effective.unloaded_agents.is_empty(), |title| {
+                                title.child(div().ml(px(8.)).text_size(px(11.)).text_color(p.muted)
+                                    .child(format!("{}: {}", self.tr("已安装，宿主未加载", "Installed, not loaded"),
+                                        effective.unloaded_agents.iter().map(|agent| agent.label()).collect::<Vec<_>>().join(" / "))))
+                            })
+                            .when(!effective.unverified_agents.is_empty(), |title| {
+                                title.child(div().ml(px(8.)).text_size(px(11.)).text_color(p.muted)
+                                    .child(format!("{}: {}", self.tr("状态未知", "Unknown"),
+                                        effective.unverified_agents.iter().map(|agent| agent.label()).collect::<Vec<_>>().join(" / "))))
+                            })
                             .when(managed, |title| {
                                 title.child(self.managed_skill_badge().ml(px(8.)))
                             })
@@ -951,6 +1060,49 @@ impl KitterApp {
                 self.effective_agent_badges(format!("project-{key}"), &effective.agents, effective.proma_is_inactive(), cx)
                     .ml(px(12.)),
             );
+        if !batch_mode && let Some(action) = &effective.grok_manual {
+            match action {
+                Ok(action) => {
+                    let action = action.clone();
+                    let project = open_project.to_path_buf();
+                    let tooltip = format!("{}\n{}\n{}", self.tr(
+                        "在以下目录启动 Grok 后粘贴；引用同源本机适配（如存在）",
+                        "Start Grok in the directory below, then paste; references the same source's local adaptation when present",
+                    ), project.display(), action.invocation.text);
+                    row = row.child(self.toolbar_text_button(
+                        ElementId::Name(format!("grok-manual-invocation-{key}").into()),
+                        self.tr("复制 Grok 调用", "Copy Grok invocation"),
+                    ).ml(px(10.)).flex_shrink_0()
+                        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let current = crate::agents::grok::manual::invocation(
+                                &project, &action.skill, action.installed_alias.as_deref(),
+                            );
+                            match current {
+                                Ok(Some(current)) if current.source_identity == action.invocation.source_identity
+                                    && current.source_revision == action.invocation.source_revision
+                                    && current.context_identity == action.invocation.context_identity
+                                    && current.includes_adaptation == action.invocation.includes_adaptation => {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(current.text));
+                                    let message = this.tr("已复制 Grok 调用；工作目录见按钮提示", "Copied Grok invocation; see the button tooltip for the working directory").to_string();
+                                    this.show_notice(message, cx);
+                                }
+                                _ => {
+                                    let message = this.tr("项目、技能源或适配入口已变化，请刷新后重试", "The project, source or adaptation entry changed; refresh and retry").to_string();
+                                    this.show_notice(message, cx);
+                                }
+                            }
+                        })));
+                }
+                Err(reason) => {
+                    let reason = reason.clone();
+                    row = row.child(div().id(ElementId::Name(format!("grok-manual-unavailable-{key}").into()))
+                        .ml(px(10.)).text_size(px(11.)).text_color(p.muted)
+                        .child(self.tr("Grok 调用暂不可用", "Grok invocation unavailable"))
+                        .tooltip(move |window, cx| Tooltip::new(reason.clone()).build(window, cx)));
+                }
+            }
+        }
         if batch_mode && can_select {
             let selected_key = key.clone();
             row = row
@@ -1003,7 +1155,7 @@ impl KitterApp {
         let selected = &self.projects_view.project_agent_filter;
         let all_label = self.tr("全部 Agent", "All agents").to_string();
         let unmarked_label = self.tr("未标注 Agent", "Unmarked agent").to_string();
-        let not_installed_label = self.tr("未安装", "Not installed").to_string();
+        let not_installed_label = self.tr("未检测到", "Not detected").to_string();
         let selected_count = selected.agents.len() + usize::from(selected.unmarked);
         let label = if selected.is_all() {
             all_label.clone()
@@ -1025,9 +1177,10 @@ impl KitterApp {
             None,
             true,
         )];
+        let known_projects = self.all_project_entries();
         let mut agents = crate::agents::AGENT_ICON_ORDER.to_vec();
         agents.sort_by_key(|info| crate::agents::display_sort_key(info.name,
-            self.model.installed_agents.iter().any(|agent| agent.id == info.id)));
+            AgentKind::from_id(info.id).is_some_and(|kind| ProjectAgentFilter::agent_available(kind, &self.model.installed_agents, &known_projects))));
         for info in agents {
             let Some(kind) = AgentKind::from_id(info.id) else {
                 continue;
@@ -1040,7 +1193,7 @@ impl KitterApp {
                     .filter(|entry| entry.agents.contains(&kind))
                     .count(),
                 Some(info.icon_path),
-                self.model.installed_agents.iter().any(|agent| agent.id == info.id),
+                ProjectAgentFilter::agent_available(kind, &self.model.installed_agents, &known_projects),
             ));
         }
         if entries.iter().any(|entry| entry.agents.is_empty()) || selected.unmarked {
@@ -1088,11 +1241,11 @@ impl KitterApp {
                     .bg(p.elevated)
                     .shadow_lg()
                     .overflow_y_scroll();
-                for (index, (filter, label, count, icon, installed)) in options.iter().enumerate() {
+                for (index, (filter, label, count, icon, available)) in options.iter().enumerate() {
                     let filter = *filter;
-                    let installed = *installed;
-                    let status = if installed { count.to_string() } else { not_installed_label.clone() };
                     let checked = selected.selected(filter);
+                    let available = *available || checked;
+                    let status = if available { count.to_string() } else { not_installed_label.clone() };
                     let app = app.clone();
                     let popover = popover_cx.entity();
                     menu = menu.child(
@@ -1109,13 +1262,13 @@ impl KitterApp {
                         .gap(px(7.))
                         .font_family(FONT_UI)
                         .text_size(px(13.))
-                        .text_color(if installed { p.text } else { p.muted })
+                        .text_color(if available { p.text } else { p.muted })
                         .bg(if checked {
                             p.selected
                         } else {
                             rgba(0x00000000)
                         })
-                        .when(installed, |row| row.hover(move |row| row.bg(p.hover)))
+                        .when(available, |row| row.hover(move |row| row.bg(p.hover)))
                         .child(div().w(px(14.)).when(checked, |slot| {
                             slot.child(Self::icon("icons/check.svg", 12., p.secondary))
                         }))
@@ -1127,7 +1280,7 @@ impl KitterApp {
                                 .justify_center()
                                 .when_some(*icon, |slot, icon| {
                                     let size = Self::brand_icon_size(icon, 16.);
-                                    if installed {
+                                    if available {
                                         slot.child(Self::brand_icon(icon, size, p.text, dark))
                                     } else if icon.ends_with(".png") {
                                         slot.child(div().opacity(0.4).child(Self::brand_icon(icon, size, p.muted, dark)))
@@ -1144,7 +1297,7 @@ impl KitterApp {
                                 .child(status),
                         )
                         .on_click(move |_, _, cx| {
-                            if !installed { return; }
+                            if !available { return; }
                             let _ = app.update(cx, |this, cx| {
                                 this.projects_view.project_agent_filter.toggle(filter);
                                 cx.notify();
@@ -1352,6 +1505,8 @@ impl KitterApp {
                     .id(ElementId::Name(
                         format!("project-{}", path.display()).into(),
                     ))
+                    .role(Role::Button)
+                    .aria_label(format!("{} · {}", self.tr("管理项目", "Manage project"), path.display()))
                     .min_h(px(48.))
                     .px(px(8.))
                     .py(px(6.))
@@ -1470,6 +1625,8 @@ impl KitterApp {
         let global_selected = self.projects_view.global_project_view;
         let global_row = div()
             .id("global-project-skills")
+            .role(Role::Button)
+            .aria_label(self.tr("管理全局技能", "Manage global skills"))
             .min_h(px(52.))
             .mx(px(8.))
             .mb(px(6.))
@@ -1619,6 +1776,14 @@ impl KitterApp {
             let loading = project_skills.is_none() || estimates.is_none();
             let project_skills = project_skills.unwrap_or_default();
             let estimates = estimates.unwrap_or_default();
+            let incomplete = estimates.iter().any(|estimate| {
+                self.projects_view.selected_project_agent.is_none_or(|agent| agent == estimate.agent)
+                    && estimate.diagnostic.is_some()
+            });
+            let diagnostic_notice = self.tr(
+                "发现结果不完整：部分 Agent 的实际生效条件尚无法确认；仅展示已知结果，技能和插件总数未知。",
+                "Discovery is incomplete: availability conditions for some Agents cannot be confirmed. Only known results are shown; skill and plugin totals are unknown.",
+            );
             let context_panel = if loading {
                 div()
                     .h(px(86.))
@@ -1649,7 +1814,9 @@ impl KitterApp {
                 )
             };
             let skill_count = all_effective_rows.len();
-            let source_groups = skill_source_groups(&all_effective_rows);
+            let skill_query = self.projects_view.effective_skill_search.read(cx).value();
+            let matching_rows = all_effective_rows.iter().filter(|row| row.matches_query(&skill_query)).cloned().collect::<Vec<_>>();
+            let source_groups = skill_source_groups(&matching_rows);
             let selected_source = self.projects_view.selected_skill_source.as_ref()
                 .filter(|(project, group)| project == open_project && source_groups.iter().any(|(available, _)| available == group))
                 .map(|(_, group)| *group)
@@ -1660,7 +1827,7 @@ impl KitterApp {
                     .iter()
                     .any(|row| row.can_remove() || !row.batch_installations(ProjectBatchAction::DisableProma).is_empty()
                         || !row.batch_installations(ProjectBatchAction::EnableProma).is_empty());
-            let effective_rows = Arc::new(all_effective_rows.iter()
+            let effective_rows = Arc::new(matching_rows.iter()
                 .filter(|row| Some(row.source_group()) == selected_source)
                 .filter(|row| !batch_mode || self.matches_project_skill_filter(row))
                 .cloned().collect::<Vec<_>>());
@@ -1689,7 +1856,11 @@ impl KitterApp {
                         .text_color(p.muted)
                         .child(Self::icon("icons/package.svg", 28., p.muted))
                         .child(div().mt(px(10.)).text_size(px(14.)).child(
-                            if batch_mode && self.projects_view.batch_filter.is_some() {
+                            if incomplete {
+                                self.tr("无法确认生效技能；发现结果未知或不完整", "Effective skills cannot be confirmed; discovery is unknown or incomplete").to_string()
+                            } else if !skill_query.trim().is_empty() {
+                                self.tr("没有匹配名称或描述的技能", "No skill names or descriptions match the search").to_string()
+                            } else if batch_mode && self.projects_view.batch_filter.is_some() {
                                 self.tr("当前分类没有符合筛选条件的技能", "No skills match the filter in this category").to_string()
                             } else if self.projects_view.selected_project_agent.is_some() {
                                 if self.uses_english() {
@@ -1740,8 +1911,13 @@ impl KitterApp {
                 .map(|plugin| plugin.skills.len())
                 .sum::<usize>();
             let mut tabs = self
-                .project_skills_tabs(skill_count, plugin_skill_count, cx)
+                .project_skills_tabs_with_diagnostic(skill_count, plugin_skill_count, incomplete, cx)
                 .child(div().flex_1());
+            if self.projects_view.project_skills_tab == ProjectSkillsTab::Skills {
+                tabs = tabs.child(Input::new(&self.projects_view.effective_skill_search)
+                    .small().w(px(230.)).mr(px(10.))
+                    .prefix(Self::icon("icons/search.svg", 14., p.muted)));
+            }
             if can_batch && self.projects_view.project_skills_tab == ProjectSkillsTab::Skills {
                 if batch_mode {
                     tabs = tabs.child(self.project_batch_controls(
@@ -1784,6 +1960,11 @@ impl KitterApp {
             }
             let skills = match self.projects_view.project_skills_tab {
                 ProjectSkillsTab::Skills => skills,
+                ProjectSkillsTab::Plugins if incomplete && plugin_groups.is_empty() => div()
+                    .id("project-plugins-scroll")
+                    .flex_1().min_h_0().px(px(28.)).pt(px(70.))
+                    .text_size(px(14.)).text_color(p.muted)
+                    .child(self.tr("无法确认插件技能；发现结果未知或不完整", "Plugin skills cannot be confirmed; discovery is unknown or incomplete")),
                 ProjectSkillsTab::Plugins => self.effective_plugins_list(plugin_groups, cx),
             };
             div()
@@ -1857,6 +2038,10 @@ impl KitterApp {
                         .child(context_panel),
                 )
                 .child(tabs)
+                .when(incomplete, |detail| detail.child(
+                    div().px(px(28.)).py(px(8.)).text_size(px(12.)).text_color(p.warning)
+                        .child(diagnostic_notice),
+                ))
                 .when(self.projects_view.project_skills_tab == ProjectSkillsTab::Skills && !source_groups.is_empty(), |panel| {
                     panel.child(self.project_skill_source_tabs(open_project, &source_groups, selected_source, cx))
                 })
@@ -1954,10 +2139,11 @@ mod tests {
             name: name.into(),
             duplicate_name: false,
             description: String::new(),
+            native_hint: None, grok_manual: None,
             locations: Vec::new(),
             built_in: false,
             agents: Vec::new(),
-            manual_only: false,
+            manual_only: false, shadowed_agents: Vec::new(), disabled_agents: Vec::new(), unloaded_agents: Vec::new(), unverified_agents: Vec::new(),
             origins: Vec::new(),
             direct_installations: paths
                 .iter()

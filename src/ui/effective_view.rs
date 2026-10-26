@@ -8,7 +8,7 @@ use std::{
 use crate::{
     InstallTarget, ProjectSkill, ProjectSkillInstallation,
     effective_skills::{
-        AgentContextEstimate, AgentKind, SkillScope, SkillSource, SkillVisibility, group_effective_skills,
+        AgentContextEstimate, AgentKind, EffectiveSkill, SkillScope, SkillSource, SkillVisibility, group_effective_skills,
     },
 };
 
@@ -55,15 +55,28 @@ pub(super) fn plugin_groups(
 }
 
 #[derive(Clone)]
+pub(super) struct GrokManualAction {
+    pub skill: EffectiveSkill,
+    pub installed_alias: Option<PathBuf>,
+    pub invocation: crate::agents::grok::manual::Invocation,
+}
+
+#[derive(Clone)]
 pub(super) struct EffectiveSkillRow {
     pub key: String,
     pub name: String,
     pub duplicate_name: bool,
     pub description: String,
+    pub native_hint: Option<String>,
+    pub grok_manual: Option<Result<GrokManualAction, String>>,
     pub locations: Vec<PathBuf>,
     pub built_in: bool,
     pub agents: Vec<AgentKind>,
     pub manual_only: bool,
+    pub shadowed_agents: Vec<AgentKind>,
+    pub disabled_agents: Vec<AgentKind>,
+    pub unloaded_agents: Vec<AgentKind>,
+    pub unverified_agents: Vec<AgentKind>,
     pub direct_installations: Vec<ProjectSkillInstallation>,
     pub origins: Vec<SkillOrigin>,
 }
@@ -111,13 +124,14 @@ pub(super) enum SkillOrigin {
 pub(super) enum SkillSourceGroup {
     Origin(SkillOrigin),
     Multiple,
+    Unknown,
 }
 
 impl SkillSourceGroup {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Origin(SkillOrigin::Project), Self::Origin(SkillOrigin::User),
         Self::Origin(SkillOrigin::Parent), Self::Origin(SkillOrigin::System),
-        Self::Origin(SkillOrigin::Builtin), Self::Origin(SkillOrigin::Integration), Self::Multiple,
+        Self::Origin(SkillOrigin::Builtin), Self::Origin(SkillOrigin::Integration), Self::Multiple, Self::Unknown,
     ];
 
     pub fn key(self) -> &'static str {
@@ -129,6 +143,7 @@ impl SkillSourceGroup {
             Self::Origin(SkillOrigin::Builtin) => "builtin",
             Self::Origin(SkillOrigin::Integration) => "integration",
             Self::Multiple => "multiple",
+            Self::Unknown => "unknown",
         }
     }
 }
@@ -141,6 +156,12 @@ pub(super) fn skill_source_groups(rows: &[EffectiveSkillRow]) -> Vec<(SkillSourc
 }
 
 impl EffectiveSkillRow {
+    pub fn is_metadata_only(&self) -> bool { self.key.starts_with("native-metadata:") }
+    pub fn matches_query(&self, query: &str) -> bool {
+        let query = query.trim().to_lowercase();
+        query.is_empty() || self.name.to_lowercase().contains(&query)
+            || self.description.to_lowercase().contains(&query)
+    }
     pub fn proma_is_inactive(&self) -> bool {
         proma_copies_inactive(&self.direct_installations)
     }
@@ -150,6 +171,7 @@ impl EffectiveSkillRow {
     }
 
     pub fn source_group(&self) -> SkillSourceGroup {
+        if self.is_metadata_only() { return SkillSourceGroup::Unknown; }
         match self.origins.as_slice() {
             [origin] => SkillSourceGroup::Origin(*origin),
             _ => SkillSourceGroup::Multiple,
@@ -203,6 +225,31 @@ fn installation_source_file(installation: &ProjectSkillInstallation) -> PathBuf 
     installation.path.join("SKILL.md")
 }
 
+// Display metadata only: the installed entity's description is not evidence
+// of native loading. Reuse the bounded regular-file reader, not a host probe.
+fn installation_description(installation: &ProjectSkillInstallation) -> String {
+    let description = || -> Option<String> {
+        let path = installation_source_file(installation);
+        let read = crate::config_read::read_regular_file_bytes(&path, || {}).ok()?;
+        if !crate::config_read::same_regular_file(&read.opened, &read.finished)
+            || !crate::config_read::same_regular_file(&read.finished, &std::fs::metadata(&path).ok()?)
+        { return None; }
+        let text = std::str::from_utf8(&read.bytes).ok()?;
+        let mut lines = text.lines();
+        if lines.next()?.trim() != "---" { return None; }
+        let mut header = Vec::new();
+        for line in lines {
+            if line.trim() == "---" {
+                let metadata: serde_yaml::Value = serde_yaml::from_str(&header.join("\n")).ok()?;
+                return metadata.get("description")?.as_str().map(|value| value.trim_end().to_owned());
+            }
+            header.push(line);
+        }
+        None
+    };
+    description().unwrap_or_default()
+}
+
 pub(super) fn installation_skill_key(installation: &ProjectSkillInstallation) -> String {
     skill_file_key(&installation_source_file(installation))
 }
@@ -253,7 +300,8 @@ pub(super) fn skill_rows(
     let global_roots = home.as_ref().map(|home| {
         crate::agents::PROJECT_INSTALL_TARGETS.iter().copied()
             .filter(|target| *target != InstallTarget::Proma)
-            .map(|target| cached_path(&crate::agents::global_target_root(home, target), &mut paths))
+            .filter_map(|target| crate::agents::global_target_root(home, target).ok())
+            .map(|root| cached_path(&root, &mut paths))
             .collect::<HashSet<_>>()
     }).unwrap_or_default();
     let mut installations = Vec::new();
@@ -321,10 +369,12 @@ pub(super) fn skill_rows(
             name: first.name.clone(),
             duplicate_name: false,
             description: first.description.clone(),
+            native_hint: None,
+            grok_manual: None,
             locations: Vec::new(),
             built_in: false,
             agents: Vec::new(),
-            manual_only: false,
+            manual_only: false, shadowed_agents: Vec::new(), disabled_agents: Vec::new(), unloaded_agents: Vec::new(), unverified_agents: Vec::new(),
             direct_installations: Vec::new(),
             origins: Vec::new(),
         };
@@ -343,6 +393,15 @@ pub(super) fn skill_rows(
                 row.agents.push(*agent);
             }
             row.manual_only |= skill.visibility == SkillVisibility::ManualOnly;
+            if skill.visibility == SkillVisibility::Shadowed && !row.shadowed_agents.contains(agent) {
+                row.shadowed_agents.push(*agent);
+            }
+            if skill.visibility == SkillVisibility::Disabled && !row.disabled_agents.contains(agent) {
+                row.disabled_agents.push(*agent);
+            }
+            if skill.visibility == SkillVisibility::Unverified && !row.unverified_agents.contains(agent) {
+                row.unverified_agents.push(*agent);
+            }
 
             let mut direct = false;
             let mut bundled = false;
@@ -354,7 +413,7 @@ pub(super) fn skill_rows(
                 let installation = indexed.installation;
                 if crate::agents::AGENT_ICON_ORDER.iter().any(|info| info.id == agent.id()
                     && info.supports_target(installation.target))
-                    && (indexed.name == skill.name || indexed.has_proma)
+                    && (indexed.name == skill.name || indexed.has_proma || *agent == AgentKind::Grok)
                     && (*agent != AgentKind::Proma
                         || (!copy_sources.contains_key(&entry) && !copy_sources.contains_key(&indexed.key))
                         || indexed.key == entry)
@@ -395,7 +454,64 @@ pub(super) fn skill_rows(
                 row.origins.push(origin);
             }
         }
+        if let Some((_, skill)) = group.iter().find(|(agent, _)| *agent == AgentKind::Grok) {
+            let source = skill.path.parent().and_then(|path| path.canonicalize().ok());
+            let installed_alias = row.direct_installations.iter()
+                .filter(|entry| source.as_ref().is_some_and(|source|
+                    entry.path.canonicalize().ok().as_ref() == Some(source)))
+                .min_by_key(|entry| entry.target != InstallTarget::Grok)
+                .map(|entry| entry.path.clone());
+            row.grok_manual = if !skill.id.contains(':') && skill.user_invocable
+                && matches!(skill.source, SkillSource::Filesystem)
+                && matches!(skill.visibility, SkillVisibility::Automatic | SkillVisibility::ManualOnly) {
+                Some(Err("宿主未提供可核验的技能调用标识".into()))
+            } else { match crate::agents::grok::manual::invocation(project_path, skill, installed_alias.as_deref()) {
+                Ok(Some(invocation)) => Some(Ok(GrokManualAction {
+                    skill: (**skill).clone(), installed_alias, invocation,
+                })),
+                Ok(None) => None,
+                Err(error) => Some(Err(error.to_string())),
+            }};
+        }
         rows.push(row);
+    }
+    // Installed Grok links remain manageable when trust/ignore prevents native
+    // loading, or the native inspector is unavailable. They never enter its
+    // effective counts. Preserve the distinction between unloaded and unknown.
+    if selected_agent.is_none_or(|agent| agent == AgentKind::Grok) {
+        let known = estimates.iter().find(|estimate| estimate.agent == AgentKind::Grok)
+            .is_some_and(|estimate| estimate.diagnostic.is_none());
+        for indexed in installations.iter().filter(|item| item.installation.target == InstallTarget::Grok) {
+            let installation = indexed.installation;
+            let key = format!("file:{}", cached_path(&installation_source_file(installation), &mut paths).display());
+            let row = if let Some(index) = rows.iter().position(|row| row.key == key) {
+                &mut rows[index]
+            } else {
+                rows.push(EffectiveSkillRow {
+                    key, name: indexed.name.into(), duplicate_name: false, description: installation_description(installation),
+                    native_hint: None, grok_manual: None,
+                    locations: Vec::new(), built_in: false, agents: Vec::new(), manual_only: false,
+                    shadowed_agents: Vec::new(), disabled_agents: Vec::new(),
+                    unloaded_agents: Vec::new(), unverified_agents: Vec::new(),
+                    direct_installations: Vec::new(), origins: Vec::new(),
+                });
+                rows.last_mut().unwrap()
+            };
+            if !row.agents.contains(&AgentKind::Grok) {
+                row.agents.push(AgentKind::Grok);
+                if known { row.unloaded_agents.push(AgentKind::Grok); }
+                else { row.unverified_agents.push(AgentKind::Grok); }
+            }
+            if !row.direct_installations.iter().any(|item| item.target == installation.target && item.path == installation.path) {
+                row.direct_installations.push(installation.clone());
+            }
+            if let Some(parent) = installation.path.parent()
+                && !row.locations.iter().any(|path| path == parent)
+            { row.locations.push(parent.to_path_buf()); }
+            let origin = if home.as_deref() == Some(project_path) { SkillOrigin::User } else { SkillOrigin::Project };
+            if !row.origins.contains(&origin) { row.origins.push(origin); }
+            matched_installations.insert(indexed.key.clone());
+        }
     }
     // Inactive or invalid Proma packages belong in installation management,
     // but must never be added to the effective catalog or token estimate.
@@ -415,11 +531,12 @@ pub(super) fn skill_rows(
                     key,
                     name: indexed.name.to_string(),
                     duplicate_name: false,
-                    description: String::new(),
+                    description: installation_description(installation),
+                    native_hint: None, grok_manual: None,
                     locations: Vec::new(),
                     built_in: false,
                     agents: Vec::new(),
-                    manual_only: false,
+                    manual_only: false, shadowed_agents: Vec::new(), disabled_agents: Vec::new(), unloaded_agents: Vec::new(), unverified_agents: Vec::new(),
                     direct_installations: Vec::new(),
                     origins: Vec::new(),
                 });
@@ -452,6 +569,23 @@ pub(super) fn skill_rows(
             if existing.description.is_empty() { existing.description = row.description; }
             existing.built_in |= row.built_in;
             existing.manual_only |= row.manual_only;
+            if existing.grok_manual.is_none()
+                || (existing.grok_manual.as_ref().is_some_and(Result::is_err)
+                    && row.grok_manual.as_ref().is_some_and(Result::is_ok)) {
+                existing.grok_manual = row.grok_manual;
+            }
+            for agent in row.shadowed_agents {
+                if !existing.shadowed_agents.contains(&agent) { existing.shadowed_agents.push(agent); }
+            }
+            for agent in row.disabled_agents {
+                if !existing.disabled_agents.contains(&agent) { existing.disabled_agents.push(agent); }
+            }
+            for agent in row.unloaded_agents {
+                if !existing.unloaded_agents.contains(&agent) { existing.unloaded_agents.push(agent); }
+            }
+            for agent in row.unverified_agents {
+                if !existing.unverified_agents.contains(&agent) { existing.unverified_agents.push(agent); }
+            }
             existing.locations.extend(row.locations);
             existing.agents.extend(row.agents);
             for origin in row.origins {
@@ -468,6 +602,21 @@ pub(super) fn skill_rows(
         }
     }
     let mut rows = merged;
+    for estimate in estimates.iter().filter(|estimate| selected_agent.is_none_or(|agent| agent == estimate.agent)) {
+        for (index, metadata) in estimate.diagnostic.iter().flat_map(|diagnostic| &diagnostic.metadata_only).enumerate() {
+            let mut hints = vec![metadata.source_type.clone()];
+            if let Some(identity) = &metadata.source_identity { hints.push(identity.clone()); }
+            if let Some(path) = &metadata.source_path { hints.push(path.display().to_string()); }
+            rows.push(EffectiveSkillRow {
+                key: format!("native-metadata:{}:{index}", estimate.agent.id()),
+                name: metadata.name.clone(), duplicate_name: false, description: metadata.description.clone(),
+                native_hint: Some(hints.join(" · ")), grok_manual: None, locations: Vec::new(), built_in: false,
+                agents: vec![estimate.agent], manual_only: false, shadowed_agents: Vec::new(),
+                disabled_agents: Vec::new(), unloaded_agents: Vec::new(), unverified_agents: vec![estimate.agent],
+                direct_installations: Vec::new(), origins: Vec::new(),
+            });
+        }
+    }
     let mut names = BTreeMap::<String, usize>::new();
     for row in &rows { *names.entry(row.name.clone()).or_default() += 1; }
     for row in &mut rows {
@@ -487,6 +636,161 @@ mod tests {
     use crate::effective_skills::EffectiveSkill;
 
     #[test]
+    fn native_metadata_rows_are_searchable_unknown_and_have_no_file_actions() {
+        use crate::effective_skills::{NativeSkillMetadata, SkillDiscoveryDiagnostic};
+        let temp = tempfile::tempdir().unwrap();
+        let estimate = AgentContextEstimate {
+            agent: AgentKind::Grok, discovered_count: 0, model_visible_count: 0,
+            manual_only_count: 0, name_only_count: 0, conditional_count: 0, estimated_tokens: 0,
+            skills: Vec::new(), diagnostic: Some(SkillDiscoveryDiagnostic {
+                code: "grok-native-metadata-unverified".into(), message: "unknown source".into(),
+                metadata_only: ["first-plugin", "second-plugin"].into_iter().map(|source| NativeSkillMetadata {
+                    name: "Shared name".into(), description: "Find by DESCRIPTION".into(),
+                    source_type: "plugin".into(), source_path: Some(temp.path().join(source)),
+                    source_identity: Some(source.into()), invocation_name: None,
+                    user_invocable: true, disabled: false,
+                }).collect(),
+            }),
+        };
+        let rows = skill_rows(std::slice::from_ref(&estimate), &[], None, temp.path());
+        assert_eq!(rows.len(), 2);
+        assert_ne!(rows[0].key, rows[1].key);
+        assert_eq!(skill_source_groups(&rows), [(SkillSourceGroup::Unknown, 2)]);
+        for row in &rows {
+            assert!(row.is_metadata_only() && row.duplicate_name);
+            assert!(row.locations.is_empty() && row.direct_installations.is_empty() && row.origins.is_empty());
+            assert!(!row.can_remove());
+            assert!(row.batch_installations(super::super::ProjectBatchAction::Remove).is_empty());
+            assert_eq!(row.unverified_agents, [AgentKind::Grok]);
+            assert!(row.matches_query(" shared ") && row.matches_query("description") && row.matches_query(""));
+            assert!(!row.matches_query("absent"));
+            assert!(row.native_hint.as_ref().unwrap().contains("plugin"));
+        }
+        assert!(skill_rows(&[estimate], &[], Some(AgentKind::Codex), temp.path()).is_empty());
+    }
+
+    #[test]
+    fn disabled_state_stays_with_its_agent_when_the_source_is_shared() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("SKILL.md");
+        std::fs::write(&source, "shared source").unwrap();
+        let estimate = |agent, visibility| AgentContextEstimate {
+            agent, discovered_count: 1,
+            model_visible_count: usize::from(visibility == SkillVisibility::Automatic),
+            manual_only_count: 0, name_only_count: 0, conditional_count: 0,
+            estimated_tokens: 0, diagnostic: None,
+            skills: vec![EffectiveSkill {
+                id: "shared".into(), name: "shared".into(), description: "shared source".into(),
+                when_to_use: None, path: source.clone(), root_path: Some(temp.path().to_path_buf()),
+                prompt_path: None, scope: SkillScope::User, user_invocable: true,
+                visibility, source: SkillSource::Filesystem,
+            }],
+        };
+        let estimates = [estimate(AgentKind::Grok, SkillVisibility::Disabled),
+            estimate(AgentKind::Codex, SkillVisibility::Automatic)];
+        let rows = skill_rows(&estimates, &[], None, temp.path());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].disabled_agents, [AgentKind::Grok]);
+        assert!(!rows[0].manual_only);
+        assert!(!rows[0].is_inactive());
+        let codex = skill_rows(&estimates, &[], Some(AgentKind::Codex), temp.path());
+        assert!(codex[0].disabled_agents.is_empty());
+        let grok = skill_rows(&estimates, &[], Some(AgentKind::Grok), temp.path());
+        assert_eq!(grok[0].disabled_agents, [AgentKind::Grok]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unloaded_or_unknown_grok_links_keep_all_management_actions_without_effective_counts() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let root = temp.path().join("project/.grok/skills");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(source.join("SKILL.md"), "shared owned source").unwrap();
+        let paths = [root.join("one"), root.join("two")];
+        for path in &paths { std::os::unix::fs::symlink(&source, path).unwrap(); }
+        let direct = [ProjectSkill { name: "shared".into(), installations: paths.iter().map(|path| ProjectSkillInstallation {
+            target: InstallTarget::Grok, path: path.clone(), managed: true, source: None,
+            removable: true, toggleable: false, bundled: false, integration: None,
+            state: None, status: None,
+        }).collect() }];
+        for known in [false, true] {
+            let estimates = [AgentContextEstimate {
+                agent: AgentKind::Grok, discovered_count: 0, model_visible_count: 0,
+                manual_only_count: 0, name_only_count: 0, conditional_count: 0, estimated_tokens: 0,
+                skills: Vec::new(), diagnostic: (!known).then(|| crate::effective_skills::SkillDiscoveryDiagnostic {
+                    code: "owned-unknown".into(), message: "owned fixture".into(), metadata_only: Vec::new(),
+                }),
+            }];
+            let rows = skill_rows(&estimates, &direct, Some(AgentKind::Grok), &temp.path().join("project"));
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].agents, [AgentKind::Grok]);
+            assert_eq!(rows[0].removable_installations().len(), 2);
+            assert_eq!(rows[0].unloaded_agents == [AgentKind::Grok], known);
+            assert_eq!(rows[0].unverified_agents == [AgentKind::Grok], !known);
+            assert!(!rows[0].manual_only && rows[0].disabled_agents.is_empty());
+            assert!(estimates[0].skills.is_empty());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_unknown_grok_description_is_searchable_without_effective_promotion() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        let root = project.join(".grok/skills");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut installations = Vec::new();
+        for (source_name, description, aliases) in [
+            ("source-a", "Owned product manual invocation revision B", vec!["one", "two"]),
+            ("source-b", "Independent same-name source", vec!["other"]),
+        ] {
+            let source = temp.path().join(source_name);
+            std::fs::create_dir(&source).unwrap();
+            std::fs::write(source.join("SKILL.md"), format!(
+                "---\nname: shared\ndescription: '{description}'\n---\nBODY_NOT_SEARCH_METADATA\n"
+            )).unwrap();
+            for alias in aliases {
+                let path = root.join(alias);
+                std::os::unix::fs::symlink(&source, &path).unwrap();
+                installations.push(ProjectSkillInstallation {
+                    target: InstallTarget::Grok, path, managed: true, source: None,
+                    removable: true, toggleable: false, bundled: false, integration: None,
+                    state: None, status: None,
+                });
+            }
+        }
+        let estimates = [AgentContextEstimate {
+            agent: AgentKind::Grok, discovered_count: 0, model_visible_count: 0,
+            manual_only_count: 0, name_only_count: 0, conditional_count: 0, estimated_tokens: 0,
+            skills: Vec::new(), diagnostic: Some(crate::effective_skills::SkillDiscoveryDiagnostic {
+                code: "owned-unknown".into(), message: "owned fixture".into(), metadata_only: Vec::new(),
+            }),
+        }];
+        let direct = [ProjectSkill { name: "shared".into(), installations }];
+        let rows = skill_rows(&estimates, &direct, Some(AgentKind::Grok), &project);
+        assert_eq!(rows.len(), 2);
+        assert_ne!(rows[0].key, rows[1].key);
+        let matches = rows.iter().filter(|row| row.matches_query(" revision B ")).collect::<Vec<_>>();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].description, "Owned product manual invocation revision B");
+        assert_eq!(matches[0].key, skill_file_key(&temp.path().join("source-a/SKILL.md")));
+        assert_eq!(matches[0].direct_installations.len(), 2);
+        for row in &rows {
+            assert!(row.duplicate_name && row.matches_query("shared"));
+            assert!(!row.matches_query("BODY_NOT_SEARCH_METADATA"));
+            assert_eq!(row.unverified_agents, [AgentKind::Grok]);
+            assert!(row.unloaded_agents.is_empty() && row.disabled_agents.is_empty());
+            assert!(!row.manual_only && row.grok_manual.is_none());
+        }
+        assert!(estimates[0].skills.is_empty() && estimates[0].diagnostic.is_some());
+        assert_eq!((estimates[0].discovered_count, estimates[0].model_visible_count,
+            estimates[0].manual_only_count, estimates[0].name_only_count,
+            estimates[0].conditional_count, estimates[0].estimated_tokens), (0, 0, 0, 0, 0, 0));
+    }
+
+    #[test]
     fn managed_copies_share_the_original_skill_row_and_keep_agent_actions() {
         use super::super::ProjectBatchAction;
         let temp = tempfile::tempdir().unwrap();
@@ -501,12 +805,12 @@ mod tests {
                 for status in ["current", "update_pending", "modified"] {
                     let estimate = |agent, path: &Path| AgentContextEstimate {
                         agent, discovered_count: 1, model_visible_count: 1, manual_only_count: 0,
-                        name_only_count: 0, conditional_count: 0, estimated_tokens: 1,
+                        name_only_count: 0, conditional_count: 0, estimated_tokens: 1, diagnostic: None,
                         skills: vec![EffectiveSkill {
                             id: name.into(), name: name.into(), description: name.into(), when_to_use: None,
                             path: path.join("SKILL.md"), root_path: path.parent().map(Path::to_path_buf),
                             prompt_path: None, scope: SkillScope::Repository,
-                            visibility: SkillVisibility::Automatic, source: SkillSource::Filesystem,
+                            user_invocable: true, visibility: SkillVisibility::Automatic, source: SkillSource::Filesystem,
                         }],
                     };
                     let mut estimates = vec![estimate(AgentKind::Codex, &source)];
@@ -550,11 +854,11 @@ mod tests {
         let skill = EffectiveSkill {
             id: "example".into(), name: "example".into(), description: String::new(), when_to_use: None,
             path: "/library/example/SKILL.md".into(), root_path: Some("/library".into()), prompt_path: None,
-            scope: SkillScope::User, visibility: SkillVisibility::Automatic, source: SkillSource::Filesystem,
+            scope: SkillScope::User, user_invocable: true, visibility: SkillVisibility::Automatic, source: SkillSource::Filesystem,
         };
         let estimates = [AgentContextEstimate {
             agent: AgentKind::Codex, discovered_count: 1, model_visible_count: 1, manual_only_count: 0,
-            name_only_count: 0, conditional_count: 0, estimated_tokens: 1, skills: vec![skill],
+            name_only_count: 0, conditional_count: 0, estimated_tokens: 1, diagnostic: None, skills: vec![skill],
         }];
         for (managed, source) in [(false, Some("/library/example")), (true, None), (true, Some("/other/example"))] {
             let direct = [ProjectSkill { name: "example".into(), installations: vec![ProjectSkillInstallation {
@@ -587,11 +891,11 @@ mod tests {
             let skill = |path: &Path| EffectiveSkill {
                 id: "example".into(), name: "example".into(), description: String::new(), when_to_use: None,
                 path: path.join("SKILL.md"), root_path: path.parent().map(Path::to_path_buf), prompt_path: None,
-                scope: SkillScope::Repository, visibility: SkillVisibility::Automatic, source: SkillSource::Filesystem,
+                scope: SkillScope::Repository, user_invocable: true, visibility: SkillVisibility::Automatic, source: SkillSource::Filesystem,
             };
             let estimate = |agent, skills: Vec<EffectiveSkill>| AgentContextEstimate {
                 agent, discovered_count: skills.len(), model_visible_count: skills.len(), manual_only_count: 0,
-                name_only_count: 0, conditional_count: 0, estimated_tokens: 1, skills,
+                name_only_count: 0, conditional_count: 0, estimated_tokens: 1, diagnostic: None, skills,
             };
             let mut estimates = vec![estimate(AgentKind::Codex, vec![skill(&a), skill(&b)])];
             if state == "active" { estimates.push(estimate(AgentKind::Proma, vec![skill(&copy)])); }
@@ -640,11 +944,11 @@ mod tests {
             let skill = EffectiveSkill {
                 id: "pdf".into(), name: "pdf".into(), description: "Independent source".into(), when_to_use: None,
                 path: "/global/pdf/SKILL.md".into(), root_path: Some("/global".into()), prompt_path: None,
-                scope: SkillScope::User, visibility: SkillVisibility::Automatic, source: SkillSource::Filesystem,
+                scope: SkillScope::User, user_invocable: true, visibility: SkillVisibility::Automatic, source: SkillSource::Filesystem,
             };
             let estimates = [AgentContextEstimate {
                 agent, discovered_count: 1, model_visible_count: 1,
-                manual_only_count: 0, name_only_count: 0, conditional_count: 0, estimated_tokens: 1, skills: vec![skill],
+                manual_only_count: 0, name_only_count: 0, conditional_count: 0, estimated_tokens: 1, diagnostic: None, skills: vec![skill],
             }];
             for state in ["active", "inactive"] {
                 let direct = [ProjectSkill { name: "pdf".into(), installations: vec![ProjectSkillInstallation {
@@ -675,11 +979,11 @@ mod tests {
     fn plugin_names_and_ids_stay_with_the_selected_agent() {
         let estimate = |agent| AgentContextEstimate {
             agent, discovered_count: 1, model_visible_count: 1, manual_only_count: 0,
-            name_only_count: 0, conditional_count: 0, estimated_tokens: 1,
+            name_only_count: 0, conditional_count: 0, estimated_tokens: 1, diagnostic: None,
             skills: vec![EffectiveSkill {
                 id: "pdf".into(), name: "pdf".into(), description: String::new(), when_to_use: None,
                 path: "/virtual/plugin/pdf".into(), root_path: None, prompt_path: None,
-                scope: SkillScope::User, visibility: SkillVisibility::Automatic,
+                scope: SkillScope::User, user_invocable: true, visibility: SkillVisibility::Automatic,
                 source: SkillSource::Plugin { id: "suite".into(), display_name: "Suite".into() },
             }],
         };
@@ -710,7 +1014,7 @@ mod tests {
             skills.push(EffectiveSkill {
                 id: name.clone(), name: name.clone(), description: String::new(), when_to_use: None,
                 path: folder.join("SKILL.md"), root_path: Some(root.join("skills")), prompt_path: None,
-                scope: SkillScope::Repository, visibility: SkillVisibility::Automatic, source: SkillSource::Filesystem,
+                scope: SkillScope::Repository, user_invocable: true, visibility: SkillVisibility::Automatic, source: SkillSource::Filesystem,
             });
             direct.push(ProjectSkill { name, installations: vec![ProjectSkillInstallation {
                 target: InstallTarget::Proma, path: folder, managed: false, source: None, removable: false, toggleable: false,
@@ -719,7 +1023,7 @@ mod tests {
         }
         let estimates = [AgentContextEstimate {
             agent: AgentKind::Proma, discovered_count: skills.len(), model_visible_count: skills.len(),
-            manual_only_count: 0, name_only_count: 0, conditional_count: 0, estimated_tokens: 0, skills,
+            manual_only_count: 0, name_only_count: 0, conditional_count: 0, estimated_tokens: 0, diagnostic: None, skills,
         }];
         PATH_RESOLUTIONS.with(|count| count.set(0));
         let rows = skill_rows(&estimates, &direct, None, root);
@@ -747,11 +1051,11 @@ mod tests {
         let effective = |path| EffectiveSkill {
             id: "actual-name".into(), name: "actual-name".into(), description: String::new(), when_to_use: None,
             path, root_path: None, prompt_path: None, scope: SkillScope::Local,
-            visibility: SkillVisibility::Automatic, source: SkillSource::Filesystem,
+            user_invocable: true, visibility: SkillVisibility::Automatic, source: SkillSource::Filesystem,
         };
         let estimates = [AgentContextEstimate {
             agent: AgentKind::Codex, discovered_count: 1, model_visible_count: 1,
-            manual_only_count: 0, name_only_count: 0, conditional_count: 0, estimated_tokens: 0,
+            manual_only_count: 0, name_only_count: 0, conditional_count: 0, estimated_tokens: 0, diagnostic: None,
             skills: vec![effective(codex.join("SKILL.md"))],
         }];
         let installation = |target, path| ProjectSkillInstallation {
@@ -801,8 +1105,8 @@ mod tests {
     #[test]
     fn source_groups_count_each_skill_once_and_omit_empty_categories() {
         let row = |name: &str, origins| EffectiveSkillRow {
-            key: name.into(), name: name.into(), duplicate_name: false, description: String::new(), locations: Vec::new(),
-            built_in: false, agents: Vec::new(), manual_only: false,
+            key: name.into(), name: name.into(), duplicate_name: false, description: String::new(), native_hint: None, grok_manual: None, locations: Vec::new(),
+            built_in: false, agents: Vec::new(), manual_only: false, shadowed_agents: Vec::new(), disabled_agents: Vec::new(), unloaded_agents: Vec::new(), unverified_agents: Vec::new(),
             direct_installations: Vec::new(), origins,
         };
         let rows = [
@@ -849,11 +1153,11 @@ mod tests {
             id: name.into(), name: name.into(), description: String::new(), when_to_use: None,
             path: PathBuf::from(root).join(name).join("SKILL.md"),
             root_path: Some(root.into()), prompt_path: None, scope,
-            visibility: SkillVisibility::Automatic, source,
+            user_invocable: true, visibility: SkillVisibility::Automatic, source,
         };
         let estimates = [AgentContextEstimate {
             agent: AgentKind::Codex, discovered_count: 4, model_visible_count: 4,
-            manual_only_count: 0, name_only_count: 0, conditional_count: 0, estimated_tokens: 0,
+            manual_only_count: 0, name_only_count: 0, conditional_count: 0, estimated_tokens: 0, diagnostic: None,
             skills: vec![
                 skill("mixed", "/home/.codex/skills", SkillScope::User, SkillSource::Filesystem),
                 skill("parent", "/repo/.agents/skills", SkillScope::Repository, SkillSource::Filesystem),
@@ -883,15 +1187,15 @@ mod tests {
     #[test]
     fn configured_user_roots_are_global_even_with_repository_scope() {
         let home = dirs::home_dir().unwrap();
-        let root = crate::agents::global_target_root(&home, InstallTarget::Codex);
+        let root = crate::agents::global_target_root(&home, InstallTarget::Codex).unwrap();
         let estimates = [AgentContextEstimate {
             agent: AgentKind::Cursor, discovered_count: 1, model_visible_count: 1,
-            manual_only_count: 0, name_only_count: 0, conditional_count: 0, estimated_tokens: 0,
+            manual_only_count: 0, name_only_count: 0, conditional_count: 0, estimated_tokens: 0, diagnostic: None,
             skills: vec![EffectiveSkill {
                 id: "configured".into(), name: "configured".into(), description: String::new(),
                 when_to_use: None, path: root.join("configured/SKILL.md"),
                 root_path: Some(root), prompt_path: None, scope: SkillScope::Repository,
-                visibility: SkillVisibility::Automatic, source: SkillSource::Filesystem,
+                user_invocable: true, visibility: SkillVisibility::Automatic, source: SkillSource::Filesystem,
             }],
         }];
         let rows = skill_rows(&estimates, &[], None, Path::new("/repo/project"));

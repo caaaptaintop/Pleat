@@ -20,6 +20,7 @@ pub(super) enum ScanProfile {
     },
     PiIgnored,
     PromaActive,
+    WorkBuddy,
 }
 
 pub(super) fn scan(root: &SkillRoot, profile: ScanProfile) -> Vec<PathBuf> {
@@ -58,6 +59,7 @@ pub(super) fn scan(root: &SkillRoot, profile: ScanProfile) -> Vec<PathBuf> {
         ScanProfile::DimRecursive => recursive(root, 11, 2_000, 20_000, false, true),
         ScanProfile::PiIgnored => pi_ignored(root),
         ScanProfile::PromaActive => proma_active(root),
+        ScanProfile::WorkBuddy => workbuddy(root),
     };
     files.sort();
     files.dedup();
@@ -186,6 +188,39 @@ fn recursive(
                 && (root.follow_directory_symlinks
                     || !entry.file_type().is_ok_and(|kind| kind.is_symlink()))
             {
+                stack.push((path, depth + 1));
+            }
+        }
+    }
+    result
+}
+
+/// WorkBuddy counts scanner calls, rather than filesystem components: the
+/// `skills/` directory inside a found skill advances one level. The root's own
+/// manifest is not an entry. Hidden directories are included, machine data not.
+fn workbuddy(root: &SkillRoot) -> Vec<PathBuf> {
+    let mut result = Vec::new();
+    let mut stack = vec![(root.path.clone(), 0usize)];
+    let mut visited = HashSet::new();
+    let mut entries_seen = 0usize;
+    while let Some((directory, depth)) = stack.pop() {
+        if depth > 5 || visited.len() >= 2_000 || entries_seen >= 20_000 { continue; }
+        let canonical = fs::canonicalize(&directory).unwrap_or_else(|_| directory.clone());
+        if machine_data_path(&canonical) || !visited.insert(canonical) { continue; }
+        let Ok(children) = fs::read_dir(&directory) else { continue; };
+        let mut children = children.take(20_001 - entries_seen).flatten().collect::<Vec<_>>();
+        children.sort_by_key(|entry| entry.file_name());
+        for child in children.into_iter().rev() {
+            entries_seen += 1;
+            if entries_seen > 20_000 { break; }
+            let path = child.path();
+            if !path.is_dir() || machine_data_path(&path) { continue; }
+            let manifest = path.join("SKILL.md");
+            if manifest.is_file() && !machine_data_path(&manifest) {
+                result.push(manifest);
+                let nested = path.join("skills");
+                if nested.is_dir() { stack.push((nested, depth + 1)); }
+            } else {
                 stack.push((path, depth + 1));
             }
         }

@@ -280,11 +280,15 @@ impl KitterApp {
                     workspace.as_ref().and_then(|result| result.as_ref().ok())
                         .map(|workspace| workspace.path.join("skills"))
                 } else if global {
-                    Some(crate::agents::global_target_root(&project, *target))
+                    crate::agents::global_target_root(&project, *target).ok()
                 } else {
-                    Some(crate::agents::installation_root(&project, *target))
+                    crate::agents::installation_root(&project, *target).ok()
                 };
-                let Some(mut path) = directory else { continue; };
+                let Some(mut path) = directory else {
+                    row = row.child(div().text_size(px(11.)).text_color(p.muted)
+                        .child(self.tr("安装目录配置无效，请检查后重试", "Invalid install directory; check configuration and retry")));
+                    continue;
+                };
                 if let Some(name) = &skill_name {
                     path.push(name);
                 }
@@ -452,7 +456,7 @@ impl KitterApp {
     pub(super) fn toggle_install_target(&mut self, target: InstallTarget) {
         if self.install_flow.selected_targets.remove(&target) { return; }
         if target != InstallTarget::Universal
-            && !self.model.installed_agents.iter().any(|agent| agent.owns_target(target)) { return; }
+            && !self.available_project_agents().iter().any(|agent| agent.owns_target(target)) { return; }
         if target != InstallTarget::Proma || self.can_install_proma() {
             self.install_flow.selected_targets.insert(target);
         }
@@ -464,13 +468,14 @@ impl KitterApp {
             .install_flow
             .selected_targets
             .contains(&InstallTarget::Universal);
-        let compatible_agents = self.model.installed_agents.iter()
+        let available_agents = self.available_project_agents();
+        let compatible_agents = available_agents.iter()
             .filter(|agent| !agent.global_only && agent.supports_target(InstallTarget::Universal))
             .map(|agent| agent.name).collect::<Vec<_>>().join(" · ");
         let compatible_label = if self.uses_english() {
-            format!("Installed and compatible: {compatible_agents}")
+            format!("Available compatible agents: {compatible_agents}")
         } else {
-            format!("本机已安装且兼容：{compatible_agents}")
+            format!("可管理的兼容 Agent：{compatible_agents}")
         };
         let universal_box = div()
             .rounded(px(RADIUS_CARD))
@@ -521,12 +526,13 @@ impl KitterApp {
         let mut independent_rows = div().flex().flex_wrap();
         let mut targets = crate::agents::INDEPENDENT_INSTALL_TARGETS.to_vec();
         targets.sort_by_key(|info| crate::agents::display_sort_key(info.name,
-            self.model.installed_agents.iter().any(|agent| agent.owns_target(info.target))));
+            available_agents.iter().any(|agent| agent.owns_target(info.target))));
         for info in targets {
             if info.target == InstallTarget::Proma && self.install_flow.global {
                 continue;
             }
-            independent_rows = independent_rows.child(self.target_row(info, cx).min_w_0().flex_basis(relative(0.5)));
+            let available = available_agents.iter().any(|agent| agent.owns_target(info.target));
+            independent_rows = independent_rows.child(self.target_row(info, available, cx).min_w_0().flex_basis(relative(0.5)));
         }
         let independent_box = div()
             .mt(px(10.))
@@ -556,6 +562,7 @@ impl KitterApp {
     pub(super) fn target_row(
         &self,
         info: crate::agents::InstallTargetInfo,
+        available: bool,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let p = self.palette();
@@ -571,11 +578,15 @@ impl KitterApp {
             InstallTarget::Antigravity => "target-antigravity",
             InstallTarget::Droid => "target-droid",
             InstallTarget::Copilot => "target-copilot",
+            InstallTarget::Trae => "target-trae",
+            InstallTarget::WorkBuddy => "target-workbuddy",
+            InstallTarget::OpenClaw => "target-openclaw",
+            InstallTarget::Hermes => "target-hermes",
             InstallTarget::Universal => "target-universal",
         };
         let active = self.install_flow.selected_targets.contains(&info.target);
         let installed = self.model.installed_agents.iter().any(|agent| agent.owns_target(info.target));
-        let available = installed && (info.target != InstallTarget::Proma || self.can_install_proma());
+        let available = available && (info.target != InstallTarget::Proma || self.can_install_proma());
         let is_last = crate::agents::INDEPENDENT_INSTALL_TARGETS
             .last()
             .is_some_and(|last| last.target == info.target);
@@ -586,7 +597,7 @@ impl KitterApp {
             .border_t_1()
             .border_color(p.border)
             .bg(if active { p.selected } else { p.surface })
-            .text_color(if installed { p.text } else { p.muted })
+            .text_color(if available { p.text } else { p.muted })
             .when(installed && !available, |row| row.opacity(0.55))
             .when(is_last, |row| {
                 row.rounded_bl(px(RADIUS_CARD - 1.))
@@ -594,7 +605,7 @@ impl KitterApp {
             })
             .flex()
             .items_center()
-            .when(available, |row| row.cursor_pointer())
+            .when(available || active, |row| row.cursor_pointer())
             .child(Checkbox::new(ElementId::Name(format!("{id}-checkbox").into())).checked(active))
             .child(
                 div()
@@ -622,12 +633,15 @@ impl KitterApp {
                     .text_size(px(11.))
                     .text_color(p.muted)
                     .ml(px(8.)).max_w(px(90.)).truncate()
-                    .child(if !installed {
-                        self.tr("未安装", "Not installed").to_string()
+                    .child(if !installed && available {
+                        self.tr("有关联项目", "Project associated").to_string()
+                    } else if !installed {
+                        self.tr("未检测到", "Not detected").to_string()
                     } else if self.install_flow.global {
                         dirs::home_dir()
                             .map(|home| {
-                                display_path(&crate::agents::global_target_root(&home, info.target))
+                                crate::agents::global_target_root(&home, info.target).map(|root| display_path(&root))
+                                    .unwrap_or_else(|_| self.tr("目录配置无效", "Invalid directory").to_string())
                             })
                             .unwrap_or_default()
                     } else if info.target == InstallTarget::Proma && !self.can_install_proma() {
@@ -637,11 +651,13 @@ impl KitterApp {
                             self.tr("见下方说明", "See details below").to_string()
                         }
                     } else {
-                        crate::agents::target_directory(info.target).to_string()
+                        crate::agents::project_target_directory(info.target)
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_else(|_| self.tr("目录配置无效", "Invalid directory").to_string())
                     }),
             )
             .on_click(cx.listener(move |this, _, _, cx| {
-                if !available { return; }
+                if !available && !active { return; }
                 this.toggle_install_target(info.target);
                 this.notify_dialog(cx);
             }))
@@ -815,6 +831,7 @@ impl KitterApp {
         let close_button = div()
             .id("close-delete-modal")
             .size(px(CONTROL_HEIGHT))
+            .flex_shrink_0()
             .rounded(px(RADIUS_CONTROL))
             .flex()
             .items_center()
@@ -838,15 +855,22 @@ impl KitterApp {
             .p(px(20.))
             .child(
                 div()
+                    .min_w_0()
+                    .w_full()
                     .flex()
                     .items_center()
+                    .gap(px(8.))
                     .child(
                         div()
+                            .id("delete-confirmation-title")
+                            .min_w_0()
+                            .flex_1()
+                            .truncate()
                             .text_size(px(16.))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child(title),
+                            .child(title.clone())
+                            .tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx)),
                     )
-                    .child(div().flex_1())
                     .child(close_button),
             )
             .child(
@@ -1085,7 +1109,7 @@ impl KitterApp {
                                             }
                                         }
                                         DeleteConfirmation::ProjectSkills { project, skills, .. } => {
-                                            let report = project::remove_project_skills(
+                                            let report = project::remove_project_skills_at(&project,
                                                 skills.iter().flat_map(|skill| &skill.installations).filter(|installation| {
                                                     this.delete_flow.selected
                                                         .contains(&installation.path)

@@ -1,0 +1,130 @@
+{
+  "author": "admin",
+  "last_modified_by": "admin",
+  "stage": "local-integration-preview-20261026",
+  "base_commit": "5419f2faae2a43b0e2e84a3997a127a0fd2bbdc0",
+  "release_status": "LOCAL_STAGE_ONLY_NOT_PUBLISHED",
+  "support_scope": [
+    {
+      "id": "codex",
+      "name": "Codex",
+      "status": "accepted_baseline_reused",
+      "scope": "accepted baseline reused"
+    },
+    {
+      "id": "proma",
+      "name": "Proma",
+      "status": "accepted_baseline_reused",
+      "scope": "accepted baseline reused"
+    },
+    {
+      "id": "opencode",
+      "name": "OpenCode",
+      "status": "normal_native_UI_chains_closed_protected_common_mode_incomplete",
+      "scope": "normal native lifecycle and desktop management; unchanged evidence reused"
+    },
+    {
+      "id": "pi",
+      "name": "Pi",
+      "status": "normal_native_UI_chains_closed_protected_common_mode_incomplete",
+      "scope": "normal native lifecycle and desktop management; unchanged evidence reused"
+    },
+    {
+      "id": "omp",
+      "name": "omp",
+      "status": "normal_native_UI_chains_closed_protected_common_mode_incomplete",
+      "scope": "normal native lifecycle and desktop management; unchanged evidence reused"
+    },
+    {
+      "id": "grok",
+      "name": "Grok",
+      "status": "normal_native_and_UI_closed_protected_trigger_modes_incomplete",
+      "scope": "normal native lifecycle and desktop management; unchanged evidence reused"
+    },
+    {
+      "id": "openclaw",
+      "name": "OpenClaw",
+      "status": "normal_native_UI_and_model_only_consumer_pass_shared_protected_modes_incomplete",
+      "scope": "normal native lifecycle and desktop management; unchanged evidence reused"
+    },
+    {
+      "id": "hermes",
+      "name": "Hermes",
+      "status": "normal_native_and_UI_closed_protected_mode_enforcement_incomplete",
+      "scope": "normal native lifecycle and desktop management; unchanged evidence reused"
+    },
+    {
+      "id": "droid",
+      "name": "Droid",
+      "status": "normal_native_and_actual_UI_closed_protected_modes_incomplete",
+      "scope": "normal native lifecycle and desktop management; unchanged evidence reused"
+    },
+    {
+      "id": "copilot",
+      "name": "GitHub Copilot",
+      "status": "normal_native_UI_JSONC_live_origin_relative_profile_lifecycle_BODY_ADP_and_scoped_storage_reuse_pass_protected_modes_final_pending",
+      "scope": "normal native lifecycle and desktop management; unchanged evidence reused"
+    },
+    {
+      "id": "trae",
+      "name": "Trae",
+      "status": "normal_native_batch_move_and_actual_scanner_gui_closed_protected_modes_retained",
+      "scope": "normal native lifecycle and desktop management; unchanged evidence reused"
+    }
+  ],
+  "accepted_partial_support": {
+    "id": "workbuddy",
+    "name": "WorkBuddy",
+    "scope": "native catalog and public management only; full native loading not accepted",
+    "evidence": "docs/agent-compatibility/workbuddy-partial-support-current.json (project evidence directory outside this Git repository)"
+  },
+  "incomplete_agents": [
+    {
+      "id": "claude-code",
+      "name": "Claude Code",
+      "status": "incomplete"
+    },
+    {
+      "id": "cursor",
+      "name": "Cursor",
+      "status": "deferred_free_account_eligibility_user_authorized_skip"
+    },
+    {
+      "id": "dimagent",
+      "name": "DimAgent",
+      "status": "native_metadata_and_actual_GUI_install4_uninstall4_pass_native_skill_read_still_blocked"
+    },
+    {
+      "id": "amp",
+      "name": "Amp",
+      "status": "accepted_native_cold_metadata_public_lifecycle_and_true_native_project_GUI_full_consumer_incomplete"
+    },
+    {
+      "id": "antigravity",
+      "name": "Antigravity",
+      "status": "allowed_native_and_ui_scopes_closed_external_two_read_refusal_retained"
+    }
+  ],
+  "source_trigger_scope": {
+    "published_behavior_reused": true,
+    "new_linked_local_mutation_and_transaction_excluded": true,
+    "protected_new_trigger_modes_accepted": false,
+    "original_uncommitted_work_preserved": true
+  },
+  "verification": {
+    "ordinary_agent_and_GUI_evidence": "reuse current accepted matrix and scoped JSON receipts; no repeat native acceptance",
+    "integration_delta": "published trigger module/setter restored verbatim, new outcome wrapper, excluded new source transaction tests",
+    "new_full_native_suite_executed": false,
+    "full_cargo_test_executed": false,
+    "integration_compilation": {
+      "CLI_and_desktop_check": "PASS",
+      "test_targets_compile": "PASS",
+      "test_execution": "not repeated",
+      "bounded_isolation_review": "PASS",
+      "review_record_sha256": "5719e395f694b42b96153b69559caf9d830a2f4ebbe21e831f2c906f509b0c20"
+    }
+  },
+  "full17_complete": false,
+  "platform": "macOS ARM64 local candidate; no new cross-platform runtime claims",
+  "publication_authorized": false
+}

@@ -3,6 +3,7 @@
 //! The public interface returns an initial-context snapshot. Agent adapters own
 //! static discovery profiles; scanner and catalog modules are internal primitives.
 
+use crate::config_read::{read_regular_file_bytes, RegularFileReadError};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     env, fs,
@@ -14,7 +15,14 @@ use serde::{Deserialize, Serialize};
 mod adapters;
 mod additional_agents;
 mod catalog;
+mod codex;
+mod copilot_origin;
 mod scanner;
+mod desktop_agents;
+mod hermes;
+mod grok_metadata;
+mod grok_selection;
+mod grok_state;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -34,13 +42,16 @@ pub enum AgentKind {
     Grok,
     OpenClaw,
     Hermes,
+    Trae,
+    WorkBuddy,
 }
 
 impl AgentKind {
     pub fn from_id(id: &str) -> Option<Self> {
         [Self::Codex, Self::ClaudeCode, Self::Cursor, Self::OpenCode, Self::Copilot,
             Self::Antigravity, Self::Amp, Self::Droid, Self::Pi, Self::Proma,
-            Self::Omp, Self::DimAgent, Self::Grok, Self::OpenClaw, Self::Hermes]
+            Self::Omp, Self::DimAgent, Self::Grok, Self::OpenClaw, Self::Hermes,
+            Self::Trae, Self::WorkBuddy]
             .into_iter().find(|agent| agent.id() == id)
     }
 
@@ -61,6 +72,8 @@ impl AgentKind {
             Self::Grok => "grok",
             Self::OpenClaw => "openclaw",
             Self::Hermes => "hermes",
+            Self::Trae => "trae",
+            Self::WorkBuddy => "workbuddy",
         }
     }
 
@@ -81,11 +94,13 @@ impl AgentKind {
             Self::Grok => "Grok",
             Self::OpenClaw => "OpenClaw",
             Self::Hermes => "Hermes",
+            Self::Trae => "Trae",
+            Self::WorkBuddy => "WorkBuddy",
         }
     }
 
     pub fn is_global_only(self) -> bool {
-        matches!(self, Self::OpenClaw | Self::Hermes)
+        false
     }
 }
 
@@ -96,6 +111,12 @@ pub enum SkillVisibility {
     NameOnly,
     ManualOnly,
     Conditional,
+    /// Discovered, but native selection between distinct same-name sources is unknown.
+    Unverified,
+    /// Retained for source inspection, but superseded in the native catalog.
+    Shadowed,
+    /// Still listed by the host, but excluded from its model and manual invocation.
+    Disabled,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -161,6 +182,7 @@ pub struct EffectiveSkill {
     pub prompt_path: Option<String>,
     pub scope: SkillScope,
     pub visibility: SkillVisibility,
+    pub user_invocable: bool,
     pub source: SkillSource,
 }
 
@@ -171,6 +193,31 @@ impl EffectiveSkill {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct NativeSkillMetadata {
+    pub name: String,
+    pub description: String,
+    pub source_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_identity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invocation_name: Option<String>,
+    pub user_invocable: bool,
+    pub disabled: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SkillDiscoveryDiagnostic {
+    pub code: String,
+    pub message: String,
+    /// Safe native display metadata without a verified effective source. These
+    /// are never filesystem Skills, installation targets, or numeric counts.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub metadata_only: Vec<NativeSkillMetadata>,
+}
+
+#[derive(Clone, Debug)]
 pub struct AgentContextEstimate {
     pub agent: AgentKind,
     pub discovered_count: usize,
@@ -180,6 +227,27 @@ pub struct AgentContextEstimate {
     pub conditional_count: usize,
     pub estimated_tokens: usize,
     pub skills: Vec<EffectiveSkill>,
+    /// Counts are not an observation when this is Some. Render unknown, not 0.
+    pub diagnostic: Option<SkillDiscoveryDiagnostic>,
+}
+
+impl Serialize for AgentContextEstimate {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("AgentContextEstimate", 8 + usize::from(self.diagnostic.is_some()))?;
+        state.serialize_field("agent", &self.agent)?;
+        let known = self.diagnostic.is_none();
+        macro_rules! count { ($field:ident) => { state.serialize_field(stringify!($field), &known.then_some(self.$field))?; }; }
+        count!(discovered_count);
+        count!(model_visible_count);
+        count!(manual_only_count);
+        count!(name_only_count);
+        count!(conditional_count);
+        count!(estimated_tokens);
+        state.serialize_field("skills", &self.skills)?;
+        if let Some(diagnostic) = &self.diagnostic { state.serialize_field("diagnostic", diagnostic)?; }
+        state.end()
+    }
 }
 
 impl AgentContextEstimate {
@@ -214,22 +282,34 @@ impl<'a> EffectiveSkillGroup<'a> {
 pub fn group_effective_skills<'a>(
     entries: impl IntoIterator<Item = (AgentKind, &'a EffectiveSkill)>,
 ) -> Vec<EffectiveSkillGroup<'a>> {
-    let mut groups = BTreeMap::<_, Vec<_>>::new();
+    group_effective_skills_with_identity(entries).into_iter().map(|(_, group)| group).collect()
+}
+
+// Preserve the exact canonical key used for grouping. A fallback path is still
+// useful for display, but cannot establish native source identity for Copilot.
+fn group_effective_skills_with_identity<'a>(
+    entries: impl IntoIterator<Item = (AgentKind, &'a EffectiveSkill)>,
+) -> Vec<(Option<PathBuf>, EffectiveSkillGroup<'a>)> {
+    let mut groups = BTreeMap::<_, (bool, Vec<_>)>::new();
     for (agent, skill) in entries {
         let (provider, id) = match &skill.source {
             SkillSource::Filesystem => (String::new(), String::new()),
             SkillSource::Builtin => (format!("builtin:{}", agent.id()), skill.id.clone()),
             SkillSource::Plugin { id, .. } => (format!("plugin:{}", agent.id()), id.clone()),
         };
-        let path = skill.path.canonicalize().unwrap_or_else(|_| skill.path.clone());
-        groups.entry((provider, id, path)).or_default().push((agent, skill));
+        let canonical = skill.path.canonicalize();
+        let known = canonical.is_ok();
+        let path = canonical.unwrap_or_else(|_| skill.path.clone());
+        let group = groups.entry((provider, id, path)).or_insert_with(|| (true, Vec::new()));
+        group.0 &= known;
+        group.1.push((agent, skill));
     }
 
     let mut result = groups
-        .into_values()
-        .map(|entries| EffectiveSkillGroup { entries })
+        .into_iter()
+        .map(|((_, _, path), (known, entries))| (known.then_some(path), EffectiveSkillGroup { entries }))
         .collect::<Vec<_>>();
-    result.sort_by(|left, right| left.name().cmp(right.name()));
+    result.sort_by(|left, right| left.1.name().cmp(right.1.name()));
     result
 }
 
@@ -241,6 +321,9 @@ struct DiscoveryContext {
 }
 
 #[derive(Clone, Debug)]
+enum OpenClawRootBoundary { SkillOnly, Contained, TrustedTargets }
+
+#[derive(Clone, Debug)]
 struct SkillRoot {
     pub path: PathBuf,
     pub scope: SkillScope,
@@ -250,6 +333,7 @@ struct SkillRoot {
     pub follow_directory_symlinks: bool,
     pub exact_skill_file: Option<PathBuf>,
     pub source: SkillSource,
+    openclaw_boundary: Option<OpenClawRootBoundary>,
 }
 
 impl SkillRoot {
@@ -263,7 +347,13 @@ impl SkillRoot {
             follow_directory_symlinks: true,
             exact_skill_file: None,
             source: SkillSource::Filesystem,
+            openclaw_boundary: None,
         }
+    }
+
+    fn openclaw(mut self, boundary: OpenClawRootBoundary) -> Self {
+        self.openclaw_boundary = Some(boundary);
+        self
     }
 
     fn plugin(
@@ -319,6 +409,7 @@ impl SkillRoot {
             follow_directory_symlinks: true,
             exact_skill_file: Some(skill_file),
             source: SkillSource::Filesystem,
+            openclaw_boundary: None,
         }
     }
 }
@@ -336,6 +427,7 @@ struct SkillMetadata {
 enum NameCollision {
     KeepAll,
     FirstWins,
+    FirstRootWins,
     LastWins,
 }
 
@@ -406,6 +498,9 @@ trait AgentSkillPolicy {
         self.is_enabled_for_root(root, skill_dir, metadata, context)
     }
     fn name_collision(&self) -> NameCollision;
+    fn user_invocable(&self, _skill_dir: &Path, _metadata: &SkillMetadata, _context: &DiscoveryContext) -> bool {
+        true
+    }
     fn visibility(
         &self,
         skill_dir: &Path,
@@ -433,7 +528,9 @@ struct CodexAdapter;
 struct ClaudeCodeAdapter;
 struct CursorPolicy;
 struct OpenCodePolicy;
-struct CopilotPolicy;
+struct CopilotPolicy {
+    roots: Vec<SkillRoot>,
+}
 struct AntigravityPolicy;
 struct AmpPolicy;
 struct DroidPolicy;
@@ -490,6 +587,15 @@ pub fn estimate_project_with_home(project: &Path, home: &Path) -> Vec<AgentConte
     estimate_for_agents(project, home, crate::agents::AGENT_ICON_ORDER)
 }
 
+/// An explicit host inspection may select an execution cwd without creating a
+/// native project association. Reuse the same scanner and host policy.
+pub fn estimate_project_for_explicit_agent(project: &Path, agent: AgentKind) -> Vec<AgentContextEstimate> {
+    let home = dirs::home_dir().unwrap_or_else(|| project.to_path_buf());
+    let agents = crate::agents::AGENT_ICON_ORDER.iter().copied()
+        .filter(|info| info.id == agent.id()).collect::<Vec<_>>();
+    estimate_for_agents(project, &home, &agents)
+}
+
 fn estimate_for_agents(
     project: &Path,
     home: &Path,
@@ -500,7 +606,13 @@ fn estimate_for_agents(
         home: home.to_path_buf(),
         repository_root: find_repository_root(project),
     };
-    adapters::inspect_project(&context, project == home, agents)
+    let mut estimates = adapters::inspect_project(&context, project == home, agents);
+    // The legacy adapter table includes OpenClaw only in its global pass.
+    // Project inspection uses the very same policy, with the selected cwd.
+    if project != home && agents.iter().any(|agent| agent.id == "openclaw") {
+        estimates.push(estimate_with_policy(&OpenClawPolicy, &context));
+    }
+    estimates
 }
 
 #[derive(Clone, Copy)]
@@ -508,12 +620,29 @@ enum MetadataProfile {
     StrictFrontmatter,
     BodyFallback,
     ProviderFrontmatter,
+    WorkBuddy,
 }
 
 fn estimate_with_policy(
     policy: &dyn AgentSkillPolicy,
     context: &DiscoveryContext,
 ) -> AgentContextEstimate {
+    if policy.agent() == AgentKind::Hermes { return hermes::estimate(context); }
+    if policy.agent() == AgentKind::OpenClaw {
+        return match openclaw_config(context) {
+            Ok(snapshot) => estimate_with_profile(&OpenClawSnapshotPolicy { snapshot }, context,
+                scanner::ScanProfile::Recursive { max_depth: usize::MAX, max_directories: usize::MAX, max_entries: usize::MAX },
+                MetadataProfile::StrictFrontmatter),
+            Err(failure) => {
+                let mut estimate = estimate_skills(policy, Vec::new());
+                estimate.diagnostic = Some(SkillDiscoveryDiagnostic {
+                    code: failure.code().into(), message: failure.message().into(),
+                    metadata_only: Vec::new(),
+                });
+                estimate
+            }
+        };
+    }
     estimate_with_profile(
         policy,
         context,
@@ -532,6 +661,9 @@ fn estimate_with_profile(
     scan_profile: scanner::ScanProfile,
     metadata_profile: MetadataProfile,
 ) -> AgentContextEstimate {
+    if policy.agent() == AgentKind::Codex {
+        return codex::estimate(context, &codex_home(context), scan_profile, metadata_profile, |roots| roots);
+    }
     let skills = discover(policy, context, scan_profile, metadata_profile);
     estimate_skills(policy, skills)
 }
@@ -569,6 +701,7 @@ fn estimate_skills(
             .count(),
         estimated_tokens: policy.estimate_tokens(&rendered.text),
         skills,
+        diagnostic: None,
     }
 }
 
@@ -587,15 +720,16 @@ fn discover(
 ) -> Vec<EffectiveSkill> {
     let mut result = Vec::new();
     let mut ids = HashSet::new();
+    let mut first_roots = HashMap::new();
     let mut canonical_paths = HashSet::new();
     for root in policy.roots(context) {
         for skill_file in scanner::scan(&root, scan_profile) {
             let skill_dir = skill_file.parent().unwrap_or(&root.path).to_path_buf();
-            // Directory-based Skills deduplicate by their directory, while
-            // Pi roots and explicit paths may contain several independent
-            // root-level Markdown files.  Keying those files by the parent
-            // directory would silently drop every file after the first one.
-            let canonical_target = if root.exact_skill_file.is_some()
+            // Codex identifies canonical SKILL.md documents, including file
+            // aliases. Other directory Skills use their directory; Pi and
+            // explicit roots can contain independent root Markdown files.
+            let canonical_target = if policy.agent() == AgentKind::Codex
+                || root.exact_skill_file.is_some()
                 || (root.include_root_markdown && skill_dir == root.path)
             {
                 &skill_file
@@ -604,29 +738,34 @@ fn discover(
             };
             let canonical = fs::canonicalize(canonical_target)
                 .unwrap_or_else(|_| canonical_target.to_path_buf());
-            if !canonical_paths.insert(canonical) {
+            if !canonical_paths.insert(canonical.clone()) {
                 continue;
             }
             let Some(metadata) = read_metadata_with_profile(&skill_file, metadata_profile) else {
                 continue;
             };
             if !policy.is_enabled_for_entry(&root, &skill_dir, &skill_file, &metadata, context) {
+                if policy.agent() == AgentKind::OpenClaw { canonical_paths.remove(&canonical); }
                 continue;
             }
             let name = policy.effective_name_for_root(&root, &skill_dir, &metadata);
             let id = policy.effective_id_for_root(&root, &skill_dir, &skill_file, &metadata);
+            let mut shadowed = false;
             match policy.name_collision() {
                 NameCollision::KeepAll => {}
-                NameCollision::FirstWins if !ids.insert(id.clone()) => continue,
-                NameCollision::FirstWins => {}
+                NameCollision::FirstWins => shadowed = !ids.insert(id.clone()),
+                NameCollision::FirstRootWins => {
+                    let root_path = crate::project_discovery::path_identity(&root.path);
+                    shadowed = first_roots.entry(id.clone()).or_insert_with(|| root_path.clone()) != &root_path;
+                }
                 NameCollision::LastWins => {
                     if ids.insert(id.clone()) {
                         // First occurrence; nothing to replace.
                     } else if let Some(index) = result
                         .iter()
-                        .position(|skill: &EffectiveSkill| skill.id == id)
+                        .position(|skill: &EffectiveSkill| skill.id == id && skill.visibility != SkillVisibility::Shadowed)
                     {
-                        result.remove(index);
+                        result[index].visibility = SkillVisibility::Shadowed;
                     }
                 }
             }
@@ -634,7 +773,9 @@ fn discover(
                 policy.prompt_path_for_entry(&root, &skill_dir, &skill_file, &metadata, context);
             result.push(EffectiveSkill {
                 id,
-                visibility: policy.visibility_for_root(&root, &skill_dir, &metadata, context),
+                visibility: if shadowed { SkillVisibility::Shadowed }
+                    else { policy.visibility_for_root(&root, &skill_dir, &metadata, context) },
+                user_invocable: policy.user_invocable(&skill_dir, &metadata, context),
                 name,
                 description: metadata.description,
                 when_to_use: metadata.when_to_use,
@@ -655,62 +796,18 @@ impl AgentSkillPolicy for CodexAdapter {
     }
 
     fn roots(&self, context: &DiscoveryContext) -> Vec<SkillRoot> {
-        let mut roots = Vec::new();
-        if !is_global_context(context) {
-            let project_config_root = context.repository_root.as_deref().unwrap_or(&context.cwd);
-            roots.push(SkillRoot::new(
-                project_config_root.join(".codex/skills"),
-                SkillScope::Repository,
-            ));
-            if project_config_root != context.cwd {
-                roots.push(SkillRoot::new(
-                    context.cwd.join(".codex/skills"),
-                    SkillScope::Local,
-                ));
-            }
-            for dir in cwd_to_boundary(&context.cwd, context.repository_root.as_deref()) {
-                roots.push(SkillRoot::new(
-                    dir.join(".agents/skills"),
-                    SkillScope::Repository,
-                ));
-            }
-        }
-        let codex_home = codex_home(context);
-        roots.push(SkillRoot::new(codex_home.join("skills"), SkillScope::User));
-        roots.push(SkillRoot::new(
-            context.home.join(".agents/skills"),
-            SkillScope::User,
-        ));
-        roots.push(
-            SkillRoot::new(codex_home.join("skills/.system"), SkillScope::System)
-                .without_directory_symlinks(),
-        );
-        #[cfg(unix)]
-        roots.push(SkillRoot::new(
-            PathBuf::from("/etc/codex/skills"),
-            SkillScope::System,
-        ));
-        roots.extend(codex_plugin_roots(&codex_home));
-        roots
+        codex::roots(context, &codex_home(context))
     }
 
     fn is_enabled(
         &self,
         _skill_dir: &Path,
         metadata: &SkillMetadata,
-        context: &DiscoveryContext,
+        _context: &DiscoveryContext,
     ) -> bool {
-        if !metadata.has_explicit_description {
-            return false;
-        }
-        let disabled = codex_disabled_skills(&codex_home(context), &context.home);
-        let source_file = fs::canonicalize(&metadata.source_path)
-            .unwrap_or_else(|_| metadata.source_path.clone());
-        let source_dir = metadata
-            .source_path
-            .parent()
-            .map(|path| fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()));
-        !disabled.contains(&source_file) && !source_dir.is_some_and(|path| disabled.contains(&path))
+        // Enablement rules are applied once to the retained catalog, rather
+        // than dropping disabled entries or reparsing User config per skill.
+        metadata.has_explicit_description
     }
 
     fn prompt_path_for_entry(
@@ -731,10 +828,12 @@ impl AgentSkillPolicy for CodexAdapter {
     fn visibility(
         &self,
         skill_dir: &Path,
-        _metadata: &SkillMetadata,
+        metadata: &SkillMetadata,
         _context: &DiscoveryContext,
     ) -> SkillVisibility {
-        if codex_manual_only(skill_dir) {
+        let canonical = fs::canonicalize(&metadata.source_path).ok();
+        let metadata_dir = canonical.as_deref().and_then(Path::parent).unwrap_or(skill_dir);
+        if codex_manual_only(metadata_dir) {
             SkillVisibility::ManualOnly
         } else {
             SkillVisibility::Automatic
@@ -1117,13 +1216,8 @@ impl AgentSkillPolicy for CopilotPolicy {
         AgentKind::Copilot
     }
 
-    fn roots(&self, context: &DiscoveryContext) -> Vec<SkillRoot> {
-        compatible_filesystem_roots(
-            context,
-            &[".github/skills", ".agents/skills", ".claude/skills"],
-            &[".copilot/skills", ".agents/skills", ".claude/skills"],
-            Some("COPILOT_SKILLS_DIRS"),
-        )
+    fn roots(&self, _context: &DiscoveryContext) -> Vec<SkillRoot> {
+        self.roots.clone()
     }
 
     fn is_enabled(
@@ -1136,7 +1230,7 @@ impl AgentSkillPolicy for CopilotPolicy {
     }
 
     fn name_collision(&self) -> NameCollision {
-        NameCollision::FirstWins
+        NameCollision::KeepAll
     }
 
     fn visibility(
@@ -1154,6 +1248,765 @@ impl AgentSkillPolicy for CopilotPolicy {
 
     fn estimate_tokens(&self, rendered: &str) -> usize {
         approx_token_count(rendered)
+    }
+}
+
+pub(crate) fn copilot_live_config_root(home: &Path, raw: &str) -> anyhow::Result<PathBuf> {
+    let cwd = env::current_dir().map_err(|_| anyhow::anyhow!("无法核验 Copilot 当前目录"))?;
+    copilot_origin::config_root(home, &cwd, raw)
+}
+
+fn copilot_roots(context: &DiscoveryContext) -> anyhow::Result<Vec<SkillRoot>> {
+    let configured = env::var_os("COPILOT_HOME");
+    let extra = env::var_os("COPILOT_SKILLS_DIRS");
+    copilot_roots_with_config(context, configured.as_deref(), extra.as_deref(),
+        |hint| copilot_origin::user_roots(&context.home, &context.cwd, hint))
+}
+
+/// Relative overrides are registry hints only, including a literal `~` segment.
+fn copilot_roots_with_config(
+    context: &DiscoveryContext,
+    configured: Option<&std::ffi::OsStr>,
+    extra: Option<&std::ffi::OsStr>,
+    origin: impl FnOnce(&Path) -> anyhow::Result<Vec<PathBuf>>,
+) -> anyhow::Result<Vec<SkillRoot>> {
+    let configured = configured.map(|value| value.to_str()
+        .ok_or_else(|| anyhow::anyhow!("Copilot 配置目录编码无效")))
+        .transpose()?;
+    let extra = extra.map(|value| value.to_str()
+        .ok_or_else(|| anyhow::anyhow!("Copilot 自定义技能目录编码无效")))
+        .transpose()?;
+    if let Some(raw) = configured.filter(|raw| !raw.is_empty()) {
+        anyhow::ensure!(!raw.contains('\0'), "Copilot 配置目录无效");
+        if !Path::new(raw).is_absolute() {
+            let hint = copilot_origin::relative_config_hint(&context.cwd, raw)?;
+            let settings = read_copilot_settings(&hint.join("settings.json"))?;
+            copilot_custom_root_inputs(&settings, extra)?;
+            return copilot_native_roots(context, origin(&hint)?);
+        }
+    }
+    let (config_root, include_personal_agents) =
+        crate::agents::copilot_config_selection_from(&context.home, configured)?;
+    let settings = read_copilot_settings(&config_root.join("settings.json"))?;
+    copilot_roots_with_origin(context, &config_root, &settings, extra, include_personal_agents,
+        || origin(&config_root))
+}
+
+/// Read one explicit settings location; fixtures need no process environment.
+#[cfg(test)]
+fn copilot_roots_at(
+    context: &DiscoveryContext,
+    config_root: &Path,
+    extra: Option<&str>,
+    include_personal_agents: bool,
+) -> anyhow::Result<Vec<SkillRoot>> {
+    let settings = read_copilot_settings(&config_root.join("settings.json"))?;
+    copilot_roots_with_origin(context, config_root, &settings, extra, include_personal_agents,
+        || copilot_origin::user_roots(&context.home, &context.cwd, config_root))
+}
+
+fn copilot_roots_with_origin(
+    context: &DiscoveryContext,
+    config_root: &Path,
+    settings: &serde_json::Value,
+    extra: Option<&str>,
+    include_personal_agents: bool,
+    origin: impl FnOnce() -> anyhow::Result<Vec<PathBuf>>,
+) -> anyhow::Result<Vec<SkillRoot>> {
+    let configured = copilot_custom_root_inputs(settings, extra)?;
+    if configured.iter().any(|path| !Path::new(path).is_absolute()) {
+        return copilot_native_roots(context, origin()?);
+    }
+    copilot_roots_from(context, config_root, settings, extra, include_personal_agents)
+}
+
+fn copilot_native_roots(context: &DiscoveryContext, user_roots: Vec<PathBuf>) -> anyhow::Result<Vec<SkillRoot>> {
+    anyhow::ensure!(!user_roots.is_empty() && user_roots.iter().all(|path| path.is_absolute()),
+        "Copilot 原生目录来源无效");
+    let mut roots = compatible_filesystem_roots(
+        context, &[".github/skills", ".agents/skills", ".claude/skills"], &[], None);
+    roots.extend(user_roots.into_iter().map(|path| SkillRoot::new(path, SkillScope::User)));
+    Ok(roots)
+}
+
+fn read_copilot_settings(path: &Path) -> anyhow::Result<serde_json::Value> {
+    match fs::metadata(path) {
+        Ok(metadata) => anyhow::ensure!(metadata.is_file(), "Copilot 设置不是普通文件"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(serde_json::json!({})),
+        Err(_) => anyhow::bail!("Copilot 设置无法读取"),
+    }
+    let bytes = read_regular_file_bytes(path, || {}).map_err(|error| match error {
+        RegularFileReadError::NotRegular => anyhow::anyhow!("Copilot 设置不是普通文件"),
+        RegularFileReadError::TooLarge => anyhow::anyhow!("Copilot 设置超过读取上限"),
+        RegularFileReadError::Unavailable => anyhow::anyhow!("Copilot 设置无法读取"),
+    })?.bytes;
+    if let Ok(settings) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+        return Ok(settings);
+    }
+    let invalid = || anyhow::anyhow!("Copilot 设置无法解析");
+    let text = std::str::from_utf8(&bytes).map_err(|_| invalid())?;
+    let settings = serde_json::from_str::<serde_json::Value>(&normalize_jsonc(text))
+        .map_err(|_| invalid())?;
+    // The shared normalizer removes comments, including incomplete comments.
+    // Validate the original grammar too; JSON5-only forms still fail above.
+    json5::from_str::<serde::de::IgnoredAny>(text).map_err(|_| invalid())?;
+    Ok(settings)
+}
+
+/// Static roots only; no environment mutation or native Agent invocation.
+fn copilot_roots_from(
+    context: &DiscoveryContext,
+    config_root: &Path,
+    settings: &serde_json::Value,
+    extra: Option<&str>,
+    include_personal_agents: bool,
+) -> anyhow::Result<Vec<SkillRoot>> {
+    let custom = copilot_custom_root_inputs(settings, extra)?.into_iter()
+        .map(|raw| crate::agents::copilot_config_root_from(&context.home, Some(raw)))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let mut roots = compatible_filesystem_roots(
+        context,
+        &[".github/skills", ".agents/skills", ".claude/skills"],
+        &[],
+        None,
+    );
+    roots.push(SkillRoot::new(config_root.join("skills"), SkillScope::User));
+    if include_personal_agents {
+        roots.push(SkillRoot::new(context.home.join(".agents/skills"), SkillScope::User));
+    }
+    roots.extend(custom.into_iter().map(|path| SkillRoot::new(path, SkillScope::User)));
+    Ok(roots)
+}
+
+fn copilot_custom_root_inputs<'a>(
+    settings: &'a serde_json::Value,
+    extra: Option<&'a str>,
+) -> anyhow::Result<Vec<&'a str>> {
+    anyhow::ensure!(settings.is_object(), "Copilot 设置格式无效");
+    let mut custom = Vec::new();
+    if let Some(value) = settings.get("skillDirectories") {
+        if !value.is_null() {
+            let paths = value.as_array()
+                .ok_or_else(|| anyhow::anyhow!("Copilot 自定义技能目录格式无效"))?;
+            for value in paths {
+                let raw = value.as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Copilot 自定义技能目录格式无效"))?;
+                anyhow::ensure!(!raw.is_empty() && !raw.contains('\0'), "Copilot 自定义技能目录无效");
+                custom.push(raw);
+            }
+        }
+    }
+    if let Some(raw) = extra.filter(|raw| !raw.is_empty()) {
+        // Actual 1.0.98 getDiscoveryPaths uses commas; colons/semicolons remain
+        // ordinary path characters. Keep every component literal, without trim.
+        for component in raw.split(',') {
+            anyhow::ensure!(!component.is_empty() && !component.contains('\0'), "Copilot 自定义技能目录无效");
+            custom.push(component);
+        }
+    }
+    Ok(custom)
+}
+
+#[cfg(test)]
+mod copilot_root_tests {
+    use super::*;
+
+    fn context(global: bool) -> DiscoveryContext {
+        let home = PathBuf::from("/synthetic/copilot-home");
+        let cwd = if global { home.clone() } else { PathBuf::from("/synthetic/repository") };
+        DiscoveryContext { home, cwd: cwd.clone(), repository_root: (!global).then_some(cwd) }
+    }
+
+    fn fixture_context(base: &Path) -> DiscoveryContext {
+        let home = base.join("home");
+        let cwd = base.join("project");
+        fs::create_dir_all(home.join(".copilot")).unwrap();
+        fs::create_dir_all(&cwd).unwrap();
+        DiscoveryContext { home, cwd: cwd.clone(), repository_root: Some(cwd) }
+    }
+
+    fn fixture_skill(root: &Path) {
+        let skill = root.join("sentinel");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(skill.join("SKILL.md"),
+            "---\nname: sentinel\ndescription: fixture\n---\n").unwrap();
+    }
+
+    #[test]
+    fn relative_config_and_literal_tilde_scan_only_verified_native_roots() {
+        for raw in ["relative-config", "~/literal-config"] {
+            let temp = tempfile::tempdir().unwrap();
+            let context = fixture_context(temp.path());
+            let hint = context.cwd.join(raw);
+            let native_root = temp.path().join("native-root");
+            let custom = temp.path().join("custom-root");
+            for root in [&hint.join("skills"), &context.home.join(".copilot/skills"),
+                &context.home.join(".agents/skills"), &custom, &native_root] {
+                fixture_skill(root);
+            }
+            fs::write(hint.join("settings.json"),
+                serde_json::to_vec(&serde_json::json!({"skillDirectories":[custom]})).unwrap()).unwrap();
+            let before = snapshot(temp.path());
+            let roots = copilot_roots_with_config(&context, Some(std::ffi::OsStr::new(raw)), None,
+                |actual_hint| {
+                    assert_eq!(actual_hint, hint);
+                    Ok(vec![native_root.clone()])
+                }).unwrap();
+            assert_eq!(roots.iter().map(|root| root.path.clone()).collect::<Vec<_>>(), vec![
+                context.cwd.join(".github/skills"), context.cwd.join(".agents/skills"),
+                context.cwd.join(".claude/skills"), native_root.clone(),
+            ]);
+            let estimate = adapters::inspect_copilot_roots(&context, Ok(roots));
+            assert!(estimate.diagnostic.is_none());
+            assert_eq!(estimate.skills.len(), 1);
+            assert!(estimate.skills[0].path.starts_with(&native_root));
+            assert_eq!(snapshot(temp.path()), before);
+        }
+    }
+
+    #[test]
+    fn relative_config_origin_failure_or_invalid_roots_never_fall_back() {
+        let temp = tempfile::tempdir().unwrap();
+        let context = fixture_context(temp.path());
+        let hint = context.cwd.join("relative-config");
+        fixture_skill(&hint.join("skills"));
+        fixture_skill(&context.home.join(".copilot/skills"));
+        fixture_skill(&context.cwd.join(".github/skills"));
+        let before = snapshot(temp.path());
+        for result in [Err(anyhow::anyhow!("native origin unavailable")), Ok(vec![]),
+            Ok(vec![PathBuf::from("relative-root")]),
+            Ok(vec![hint.join("skills"), PathBuf::from("relative-root")])] {
+            let roots = copilot_roots_with_config(&context,
+                Some(std::ffi::OsStr::new("relative-config")), None, |actual_hint| {
+                    assert_eq!(actual_hint, hint);
+                    result
+                });
+            let estimate = adapters::inspect_copilot_roots(&context, roots);
+            assert_unknown(&estimate);
+        }
+        assert_eq!(snapshot(temp.path()), before);
+    }
+
+    #[test]
+    fn invalid_relative_config_never_queries_native_origin() {
+        let temp = tempfile::tempdir().unwrap();
+        let context = fixture_context(temp.path());
+        let config = context.cwd.join("relative-config");
+        fs::create_dir_all(&config).unwrap();
+        for (raw, settings, extra) in [
+            ("bad\0config", "{}", None),
+            ("relative-config", "{", None),
+            ("relative-config", "[]", None),
+            ("relative-config", r#"{"skillDirectories":["relative",17]}"#, None),
+            ("relative-config", r#"{"skillDirectories":"relative"}"#, None),
+            ("relative-config", r#"{"skillDirectories":["bad\u0000path"]}"#, None),
+            ("relative-config", "{}", Some("relative,,extra")),
+            ("relative-config", "{}", Some("bad\0extra")),
+        ] {
+            fs::write(config.join("settings.json"), settings).unwrap();
+            let before = snapshot(temp.path());
+            let roots = copilot_roots_with_config(&context, Some(std::ffi::OsStr::new(raw)),
+                extra.map(std::ffi::OsStr::new), |_| panic!("invalid config reached native origin"));
+            assert_unknown(&adapters::inspect_copilot_roots(&context, roots));
+            assert_eq!(snapshot(temp.path()), before);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let invalid = std::ffi::OsStr::from_bytes(b"bad\xffpath");
+            for (raw, extra) in [(invalid, None),
+                (std::ffi::OsStr::new("relative-config"), Some(invalid))] {
+                let roots = copilot_roots_with_config(&context, Some(raw), extra,
+                    |_| panic!("invalid encoding reached native origin"));
+                assert_unknown(&adapters::inspect_copilot_roots(&context, roots));
+            }
+        }
+    }
+
+    #[test]
+    fn relative_settings_use_verified_native_roots_instead_of_guessing() {
+        let temp = tempfile::tempdir().unwrap();
+        let context = fixture_context(temp.path());
+        let native_root = temp.path().join("native-root");
+        fixture_skill(&native_root);
+        fixture_skill(&context.cwd.join("relative-root"));
+        let roots = copilot_roots_with_origin(&context, &context.home.join(".copilot"),
+            &serde_json::json!({"skillDirectories":["relative-root"]}), None, true,
+            || Ok(vec![native_root.clone()]));
+        let estimate = adapters::inspect_copilot_roots(&context, roots);
+        assert!(estimate.diagnostic.is_none());
+        assert_eq!(estimate.skills.len(), 1);
+        assert!(estimate.skills[0].path.starts_with(native_root));
+    }
+
+    #[test]
+    fn malformed_relative_configuration_never_queries_native_origin() {
+        let context = context(false);
+        for settings in [serde_json::json!({"skillDirectories":["relative",17]}),
+            serde_json::json!({"skillDirectories":["relative","bad\u{0}path"]}),
+            serde_json::json!({"skillDirectories":"relative"})] {
+            assert!(copilot_roots_with_origin(&context, &context.home.join(".copilot"),
+                &settings, None, true, || panic!("invalid settings reached native origin")).is_err());
+        }
+    }
+
+    #[test]
+    fn absent_native_origin_preserves_unknown_and_absolute_roots_stay_static() {
+        let temp = tempfile::tempdir().unwrap();
+        let context = fixture_context(temp.path());
+        let config = context.home.join(".copilot");
+        fixture_skill(&config.join("skills"));
+        let roots = copilot_roots_with_origin(&context, &config,
+            &serde_json::json!({"skillDirectories":["relative"]}), None, true,
+            || anyhow::bail!("native origin unavailable"));
+        assert_unknown(&adapters::inspect_copilot_roots(&context, roots));
+        let roots = copilot_roots_with_origin(&context, &config, &serde_json::json!({}),
+            None, true, || panic!("absolute configuration queried a native endpoint")).unwrap();
+        assert!(roots.iter().any(|root| root.path == config.join("skills")));
+    }
+
+    #[test]
+    fn copilot_jsonc_settings_discover_custom_skills_without_changing_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let context = fixture_context(temp.path());
+        let config = context.home.join(".copilot");
+        let custom = temp.path().join("custom-skills");
+        fixture_skill(&custom);
+        fs::write(config.join("settings.json"), format!(
+            "{{\n // configured skills\n \"skillDirectories\": [{},], /* trailing comma */\n \
+             \"unrelated\": \"https://example.invalid/a/*literal*/\",\n}}\n",
+            serde_json::to_string(&custom).unwrap(),
+        )).unwrap();
+        let before = snapshot(temp.path());
+        let settings = read_copilot_settings(&config.join("settings.json")).unwrap();
+        assert_eq!(settings["unrelated"], "https://example.invalid/a/*literal*/");
+        let estimate = adapters::inspect_copilot_roots(&context,
+            copilot_roots_at(&context, &config, None, true));
+        assert!(estimate.diagnostic.is_none());
+        assert_eq!(estimate.skills.len(), 1);
+        assert_eq!(estimate.skills[0].name, "sentinel");
+        assert_eq!(snapshot(temp.path()), before);
+    }
+
+    #[test]
+    fn copilot_invalid_jsonc_keeps_counts_unknown_and_preserves_files() {
+        for text in [
+            "{\"skillDirectories\":[]}/*",
+            "{\"skillDirectories\":[], \"unrelated\": 1/* gap */2}",
+            "{skillDirectories: []}",
+            "{\"skillDirectories\":['/synthetic/root']}",
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let context = fixture_context(temp.path());
+            let config = context.home.join(".copilot");
+            fixture_skill(&config.join("skills"));
+            fs::write(config.join("settings.json"), text).unwrap();
+            let before = snapshot(temp.path());
+            let estimate = adapters::inspect_copilot_roots(&context,
+                copilot_roots_at(&context, &config, None, true));
+            assert_unknown(&estimate);
+            assert_eq!(snapshot(temp.path()), before);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copilot_default_pair_selection_is_independent_of_root_input_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let context = fixture_context(temp.path());
+        let config = context.home.join(".copilot");
+        fixture_skill(&config.join("skills"));
+        fixture_skill(&context.cwd.join(".github/skills"));
+        let roots = copilot_roots_at(&context, &config, None, true).unwrap();
+        let estimate = adapters::inspect_copilot_roots(&context, Ok(roots.clone()));
+        assert_eq!(estimate.skills.len(), 2);
+        assert!(estimate.diagnostic.is_none());
+        assert_eq!(estimate.model_visible_count, 1);
+        assert_eq!(estimate.skills.iter().filter(|skill| skill.scope == SkillScope::Repository
+            && skill.visibility == SkillVisibility::Automatic).count(), 1);
+        assert_eq!(estimate.skills.iter().filter(|skill| skill.scope == SkillScope::User
+            && skill.visibility == SkillVisibility::Shadowed).count(), 1);
+        let reordered = adapters::inspect_copilot_roots(&context, Ok(roots.into_iter().rev().collect()));
+        assert_eq!(serde_json::to_value(&estimate).unwrap(), serde_json::to_value(&reordered).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn standard_same_name_copilot_sources_select_project_and_aliases_merge() {
+        let temp = tempfile::tempdir().unwrap();
+        let context = fixture_context(temp.path());
+        let config = context.home.join(".copilot");
+        fixture_skill(&config.join("skills"));
+        fixture_skill(&context.cwd.join(".github/skills"));
+        let aliases = context.home.join(".agents/skills");
+        fs::create_dir_all(&aliases).unwrap();
+        std::os::unix::fs::symlink(config.join("skills/sentinel"), aliases.join("sentinel")).unwrap();
+        let before = snapshot(temp.path());
+        let estimate = adapters::inspect_copilot_roots(&context,
+            copilot_roots_at(&context, &config, None, true));
+        assert_eq!(estimate.skills.len(), 2);
+        assert!(estimate.diagnostic.is_none());
+        assert_eq!(estimate.model_visible_count, 1);
+        for skill in &estimate.skills {
+            let project = skill.scope == SkillScope::Repository;
+            assert_eq!(skill.visibility, if project { SkillVisibility::Automatic } else { SkillVisibility::Shadowed });
+            assert_eq!(skill.root_path.as_ref(), Some(&if project {
+                context.cwd.join(".github/skills")
+            } else { config.join("skills") }));
+        }
+        assert_ne!(estimate.skills[0].path.canonicalize().unwrap(),
+            estimate.skills[1].path.canonicalize().unwrap());
+        let mut reversed = copilot_roots_at(&context, &config, None, true).unwrap();
+        reversed.reverse();
+        let reordered = adapters::inspect_copilot_roots(&context, Ok(reversed));
+        assert_eq!(serde_json::to_value(&estimate).unwrap(), serde_json::to_value(&reordered).unwrap());
+        assert_eq!(snapshot(temp.path()), before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copilot_same_source_alias_is_not_a_name_collision() {
+        let temp = tempfile::tempdir().unwrap();
+        let context = fixture_context(temp.path());
+        let config = context.home.join(".copilot");
+        fixture_skill(&config.join("skills"));
+        let aliases = context.home.join(".agents/skills");
+        fs::create_dir_all(&aliases).unwrap();
+        std::os::unix::fs::symlink(config.join("skills/sentinel"), aliases.join("sentinel")).unwrap();
+        let estimate = adapters::inspect_copilot_roots(&context,
+            copilot_roots_at(&context, &config, None, true));
+        assert_eq!(estimate.skills.len(), 1);
+        assert_eq!(estimate.skills[0].visibility, SkillVisibility::Automatic);
+        assert!(estimate.diagnostic.is_none());
+    }
+
+    fn assert_collision_unknown(estimate: &AgentContextEstimate) {
+        assert_eq!(estimate.diagnostic.as_ref().unwrap().code, "copilot_same_name_selection_unknown");
+        let json = serde_json::to_value(estimate).unwrap();
+        for field in ["discovered_count", "model_visible_count", "manual_only_count",
+            "name_only_count", "conditional_count", "estimated_tokens"] {
+            assert!(json[field].is_null(), "{field} must stay unknown");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copilot_directory_retarget_after_grouping_preserves_snapshot_and_unknown_counts() {
+        for mode in ["default", "manual", "conditional"] {
+            for reverse in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let context = fixture_context(temp.path());
+                let config = context.home.join(".copilot");
+                fixture_skill(&config.join("skills"));
+                let personal_dir = config.join("skills/sentinel");
+                let extension = match mode {
+                    "manual" => "disable-model-invocation: true\n",
+                    "conditional" => "paths: ['src/**']\n",
+                    _ => "",
+                };
+                fs::write(personal_dir.join("SKILL.md"),
+                    format!("---\nname: sentinel\ndescription: fixture\n{extension}---\n")).unwrap();
+                let project_source = temp.path().join("source-a");
+                fixture_skill(&project_source);
+                let project_root = context.cwd.join(".github/skills");
+                fs::create_dir_all(&project_root).unwrap();
+                let project_alias = project_root.join("sentinel");
+                std::os::unix::fs::symlink(project_source.join("sentinel"), &project_alias).unwrap();
+                let mut roots = copilot_roots_at(&context, &config, None, true).unwrap();
+                if reverse { roots.reverse(); }
+                let reached = std::cell::Cell::new(false);
+                let estimate = adapters::inspect_copilot_roots_after_grouping(&context, Ok(roots), || {
+                    // This synchronous checkpoint runs after canonical grouping
+                    // and identity capture, before the first bounded-header open.
+                    reached.set(true);
+                    assert_ne!(project_alias.canonicalize().unwrap(), personal_dir.canonicalize().unwrap());
+                    fs::remove_file(&project_alias).unwrap();
+                    std::os::unix::fs::symlink(&personal_dir, &project_alias).unwrap();
+                });
+                assert!(reached.get());
+                assert_eq!(estimate.skills.len(), 2, "retain captured rows: {mode}/{reverse}");
+                assert_collision_unknown(&estimate);
+                for skill in &estimate.skills {
+                    let expected = match (skill.scope, mode) {
+                        (SkillScope::User, "manual") => SkillVisibility::ManualOnly,
+                        (SkillScope::User, "conditional") => SkillVisibility::Conditional,
+                        _ => SkillVisibility::Unverified,
+                    };
+                    assert_eq!(skill.visibility, expected, "{mode}/{reverse}");
+                }
+                // A separate stable inspection may collapse the now-shared
+                // source; never represent the raced snapshot as a verified pair.
+                if mode == "default" {
+                    let stable = adapters::inspect_copilot_roots(&context,
+                        copilot_roots_at(&context, &config, None, true));
+                    assert_eq!(stable.skills.len(), 1);
+                    assert_eq!(stable.skills[0].visibility, SkillVisibility::Automatic);
+                    assert!(stable.diagnostic.is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn copilot_unverified_sources_and_modes_keep_unknown_counts() {
+        for variant in ["three_sources", "custom", "inherited", "plugin", "wrong_scope",
+            "manual", "conditional", "user_disabled", "enabled_false", "explicit_default", "required"] {
+            let temp = tempfile::tempdir().unwrap();
+            let mut context = fixture_context(temp.path());
+            let config = context.home.join(".copilot");
+            fixture_skill(&config.join("skills"));
+            fixture_skill(&context.cwd.join(".github/skills"));
+            if variant == "three_sources" {
+                fixture_skill(&context.cwd.join(".agents/skills"));
+            }
+            if variant == "inherited" {
+                context.repository_root = Some(temp.path().to_path_buf());
+            }
+            let mut roots = copilot_roots_at(&context, &config, None, true).unwrap();
+            match variant {
+                "custom" => roots.push(SkillRoot::new(temp.path().join("custom"), SkillScope::User)),
+                "plugin" => roots[0].source = SkillSource::Plugin { id: "fixture".into(), display_name: "fixture".into() },
+                "wrong_scope" => roots[0].scope = SkillScope::User,
+                "manual" | "conditional" | "user_disabled" | "enabled_false" | "explicit_default" | "required" => {
+                    let mode = match variant {
+                        "manual" => "disable-model-invocation: true",
+                        "conditional" => "paths: ['src/**']",
+                        "user_disabled" => "user-invocable: false",
+                        "enabled_false" => "enabled: false",
+                        "explicit_default" => "disable-model-invocation: false",
+                        _ => "mode: required",
+                    };
+                    fs::write(config.join("skills/sentinel/SKILL.md"),
+                        format!("---\nname: sentinel\ndescription: fixture\n{mode}\n---\n")).unwrap();
+                },
+                _ => {},
+            }
+            let before = snapshot(temp.path());
+            let estimate = adapters::inspect_copilot_roots(&context, Ok(roots));
+            assert_eq!(estimate.skills.len(), if variant == "three_sources" { 3 } else { 2 }, "{variant}");
+            assert_collision_unknown(&estimate);
+            for skill in &estimate.skills {
+                let expected = if skill.scope == SkillScope::User && variant == "manual" {
+                    SkillVisibility::ManualOnly
+                } else if skill.scope == SkillScope::User && variant == "conditional" {
+                    SkillVisibility::Conditional
+                } else { SkillVisibility::Unverified };
+                assert_eq!(skill.visibility, expected, "{variant}: {:?}", skill.scope);
+            }
+            assert!(!estimate.skills.iter().any(|skill| matches!(skill.visibility,
+                SkillVisibility::Automatic | SkillVisibility::Shadowed)));
+            assert_eq!(snapshot(temp.path()), before, "{variant}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copilot_same_skill_file_alias_deduplicates_before_collision_selection() {
+        let temp = tempfile::tempdir().unwrap();
+        let context = fixture_context(temp.path());
+        let config = context.home.join(".copilot");
+        fixture_skill(&config.join("skills"));
+        let project_skill = context.cwd.join(".github/skills/sentinel");
+        fs::create_dir_all(&project_skill).unwrap();
+        std::os::unix::fs::symlink(config.join("skills/sentinel/SKILL.md"),
+            project_skill.join("SKILL.md")).unwrap();
+        let estimate = adapters::inspect_copilot_roots(&context,
+            copilot_roots_at(&context, &config, None, true));
+        assert_eq!(estimate.skills.len(), 1);
+        assert_eq!(estimate.skills[0].visibility, SkillVisibility::Automatic);
+        assert!(estimate.diagnostic.is_none());
+    }
+
+    fn snapshot(path: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        let mut result = BTreeMap::new();
+        for entry in fs::read_dir(path).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                result.insert(path.clone(), Vec::new());
+                result.extend(snapshot(&path));
+            } else {
+                result.insert(path.clone(), fs::read(path).unwrap());
+            }
+        }
+        result
+    }
+
+    fn assert_unknown(estimate: &AgentContextEstimate) {
+        assert_eq!(estimate.agent, AgentKind::Copilot);
+        assert!(estimate.skills.is_empty());
+        let diagnostic = estimate.diagnostic.as_ref().unwrap();
+        assert_eq!(diagnostic.code, "copilot_roots_unavailable");
+        assert_eq!(diagnostic.message, "Copilot 技能目录配置无法解析或读取；技能数量未知");
+        let json = serde_json::to_value(estimate).unwrap();
+        assert!(json["diagnostic"].is_object());
+        for field in ["discovered_count", "model_visible_count", "manual_only_count",
+            "name_only_count", "conditional_count", "estimated_tokens"] {
+            assert!(json.get(field).unwrap().is_null(), "{field} must be unknown");
+        }
+    }
+
+    #[test]
+    fn settings_failures_are_unknown_without_default_scan_or_file_changes() {
+        for failure in ["invalid_json", "oversized", "unsupported_roots", "unreadable"] {
+            let temp = tempfile::tempdir().unwrap();
+            let context = fixture_context(temp.path());
+            let config = context.home.join(".copilot");
+            fixture_skill(&config.join("skills"));
+            fixture_skill(&context.home.join(".agents/skills"));
+            fixture_skill(&context.cwd.join(".github/skills"));
+            // Existing archive and installation/source/local data are read-only inputs.
+            fs::write(context.cwd.join("project.json"), b"{\"archived\":false}").unwrap();
+            for directory in ["installation", "source", "local-data"] {
+                let path = context.cwd.join(directory);
+                fs::create_dir_all(&path).unwrap();
+                fs::write(path.join("sentinel"), b"unchanged").unwrap();
+            }
+            let settings = config.join("settings.json");
+            match failure {
+                "invalid_json" => fs::write(&settings, b"{invalid").unwrap(),
+                "oversized" => fs::write(&settings, vec![b' '; 1024 * 1024 + 1]).unwrap(),
+                "unsupported_roots" => fs::write(&settings,
+                    br#"{"skillDirectories":["relative-root"]}"#).unwrap(),
+                // A directory fails as a settings file even when tests run as root.
+                "unreadable" => fs::create_dir(&settings).unwrap(),
+                _ => unreachable!(),
+            }
+            let before = snapshot(temp.path());
+            let roots = copilot_roots_at(&context, &config, None, true);
+            assert!(roots.is_err(), "{failure}");
+            let estimate = adapters::inspect_copilot_roots(&context, roots);
+            assert_unknown(&estimate);
+            assert_eq!(snapshot(temp.path()), before, "{failure} changed files");
+        }
+    }
+
+    #[test]
+    fn injected_root_failure_is_redacted_at_estimate_boundary() {
+        let context = context(true);
+        let estimate = adapters::inspect_copilot_roots(&context,
+            Err(anyhow::anyhow!("synthetic-sensitive-error /private/fixture")));
+        assert_unknown(&estimate);
+        let serialized = serde_json::to_string(&estimate).unwrap();
+        assert!(!serialized.contains("synthetic-sensitive-error"));
+        assert!(!serialized.contains("/private/fixture"));
+    }
+
+    #[test]
+    fn missing_settings_are_known_zero_and_success_reuses_production_scanner() {
+        let temp = tempfile::tempdir().unwrap();
+        let context = fixture_context(temp.path());
+        let config = context.home.join(".copilot");
+        let estimate = adapters::inspect_copilot_roots(&context,
+            copilot_roots_at(&context, &config, None, true));
+        assert!(estimate.diagnostic.is_none());
+        assert!(estimate.skills.is_empty());
+        let json = serde_json::to_value(&estimate).unwrap();
+        for field in ["discovered_count", "model_visible_count", "manual_only_count",
+            "name_only_count", "conditional_count", "estimated_tokens"] {
+            assert_eq!(json[field], serde_json::json!(0));
+        }
+        assert!(json.get("diagnostic").is_none());
+        fixture_skill(&config.join("skills"));
+        let estimate = adapters::inspect_copilot_roots(&context,
+            copilot_roots_at(&context, &config, None, true));
+        assert!(estimate.diagnostic.is_none());
+        assert_eq!(estimate.discovered_count, 1);
+        assert_eq!(estimate.skills[0].name, "sentinel");
+    }
+
+    #[test]
+    fn default_global_roots_exclude_personal_claude_and_project_roots() {
+        let context = context(true);
+        let root = crate::agents::copilot_config_root_from(&context.home, None).unwrap();
+        let roots = copilot_roots_from(&context, &root, &serde_json::json!({}), None, true).unwrap();
+        assert_eq!(roots.iter().map(|root| root.path.clone()).collect::<Vec<_>>(),
+            vec![context.home.join(".copilot/skills"), context.home.join(".agents/skills")]);
+        assert!(roots.iter().all(|root| root.scope == SkillScope::User));
+    }
+
+    #[test]
+    fn nondefault_root_suppresses_only_personal_agents_and_keeps_project_roots() {
+        let context = context(false);
+        let root = Path::new("/synthetic/isolated-copilot");
+        let roots = copilot_roots_from(&context, root, &serde_json::json!({}), None, false).unwrap();
+        let paths = roots.iter().map(|root| root.path.clone()).collect::<Vec<_>>();
+        for relative in [".github/skills", ".agents/skills", ".claude/skills"] {
+            assert!(paths.contains(&context.cwd.join(relative)));
+        }
+        assert!(paths.contains(&root.join("skills")));
+        assert!(!paths.contains(&context.home.join(".agents/skills")));
+        assert!(!paths.contains(&context.home.join(".copilot/skills")));
+        assert!(!paths.contains(&context.home.join(".claude/skills")));
+    }
+
+    #[test]
+    fn equivalent_default_override_with_parent_component_excludes_personal_agents() {
+        let context = context(true);
+        let (root, personal_agents) = crate::agents::copilot_config_selection_from(&context.home,
+            Some("/synthetic/copilot-home/.copilot/../.copilot/")).unwrap();
+        let roots = copilot_roots_from(&context, &root, &serde_json::json!({}), None, personal_agents).unwrap();
+        assert_eq!(root, context.home.join(".copilot"));
+        assert!(!personal_agents);
+        assert!(!roots.iter().any(|root| root.path == context.home.join(".agents/skills")));
+    }
+
+    #[test]
+    fn custom_absolute_roots_follow_personal_roots_without_root_markdown() {
+        let context = context(true);
+        let root = Path::new("/synthetic/isolated-copilot");
+        let settings = serde_json::json!({"skillDirectories": ["/synthetic/settings-skills"]});
+        let roots = copilot_roots_from(&context, root, &settings,
+            Some("/synthetic/environment-skills"), false).unwrap();
+        assert_eq!(roots.iter().map(|root| root.path.clone()).collect::<Vec<_>>(), vec![
+            root.join("skills"), PathBuf::from("/synthetic/settings-skills"),
+            PathBuf::from("/synthetic/environment-skills"),
+        ]);
+        assert!(roots.iter().all(|root| !root.include_root_markdown));
+    }
+
+    #[test]
+    fn unsupported_custom_forms_fail_instead_of_scanning_a_default_root() {
+        let context = context(true);
+        let root = Path::new("/synthetic/isolated-copilot");
+        for settings in [serde_json::json!([]), serde_json::json!({"skillDirectories": "bad"}),
+            serde_json::json!({"skillDirectories": [""]}),
+            serde_json::json!({"skillDirectories": ["~/skills"]}),
+            serde_json::json!({"skillDirectories": [1]})] {
+            assert!(copilot_roots_from(&context, root, &settings, None, false).is_err());
+        }
+        for extra in ["relative", "/synthetic/a,,/synthetic/b"] {
+            assert!(copilot_roots_from(&context, root, &serde_json::json!({}), Some(extra), false).is_err());
+        }
+    }
+
+    #[test]
+    fn native_comma_delimiter_keeps_colons_and_semicolons_literal() {
+        let context = context(true);
+        let config = context.home.join(".copilot");
+        for (extra, expected) in [
+            ("/synthetic/one,/synthetic/two", vec!["/synthetic/one", "/synthetic/two"]),
+            ("/synthetic/one:/synthetic/two", vec!["/synthetic/one:/synthetic/two"]),
+            ("/synthetic/one;/synthetic/two", vec!["/synthetic/one;/synthetic/two"]),
+        ] {
+            let roots = copilot_roots_from(&context, &config, &serde_json::json!({}), Some(extra), false).unwrap();
+            assert_eq!(roots.iter().skip(1).map(|root| root.path.clone()).collect::<Vec<_>>(),
+                expected.into_iter().map(PathBuf::from).collect::<Vec<_>>());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn special_settings_files_are_unknown_and_never_wait_for_a_writer() {
+        use std::os::unix::ffi::OsStrExt;
+        let temp = tempfile::tempdir().unwrap();
+        let context = fixture_context(temp.path());
+        let config = context.home.join(".copilot");
+        let file = config.join("settings.json");
+        let cpath = std::ffi::CString::new(file.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) }, 0);
+        let estimate = adapters::inspect_copilot_roots(&context,
+            copilot_roots_at(&context, &config, None, true));
+        assert_unknown(&estimate);
     }
 }
 
@@ -1489,90 +2342,14 @@ impl AgentSkillPolicy for PromaAdapter {
 }
 
 impl AgentSkillPolicy for GrokAdapter {
-    fn agent(&self) -> AgentKind {
-        AgentKind::Grok
-    }
+    fn agent(&self) -> AgentKind { AgentKind::Grok }
 
-    fn roots(&self, context: &DiscoveryContext) -> Vec<SkillRoot> {
-        let mut roots = Vec::new();
-        if !is_global_context(context) {
-            for dir in cwd_to_boundary(&context.cwd, context.repository_root.as_deref()) {
-                let scope = if dir == context.cwd {
-                    SkillScope::Local
-                } else {
-                    SkillScope::Repository
-                };
-                for config in [".grok", ".agents", ".claude", ".cursor"] {
-                    roots.push(SkillRoot::new(dir.join(config).join("skills"), scope));
-                    roots.push(
-                        SkillRoot::new(dir.join(config).join("commands"), scope).flat_markdown(),
-                    );
-                }
-            }
-        }
-        for config_root in [
-            grok_home(context),
-            context.home.join(".agents"),
-            context.home.join(".claude"),
-            context.home.join(".cursor"),
-        ] {
-            roots.push(SkillRoot::new(config_root.join("skills"), SkillScope::User));
-            roots.push(
-                SkillRoot::new(config_root.join("commands"), SkillScope::User).flat_markdown(),
-            );
-        }
-        roots.extend(grok_configured_skill_roots(context));
-        roots
-    }
-
-    fn effective_name(&self, _skill_dir: &Path, metadata: &SkillMetadata) -> String {
-        normalize_grok_name(&metadata.name)
-    }
-
-    fn name_collision(&self) -> NameCollision {
-        NameCollision::KeepAll
-    }
-
-    fn is_enabled(
-        &self,
-        _skill_dir: &Path,
-        metadata: &SkillMetadata,
-        context: &DiscoveryContext,
-    ) -> bool {
-        let canonical = fs::canonicalize(&metadata.source_path)
-            .unwrap_or_else(|_| metadata.source_path.clone());
-        !grok_config_values(context, "ignore")
-            .into_iter()
-            .map(|value| resolve_agent_path(&value, &context.home, &grok_home(context)))
-            .map(|path| fs::canonicalize(&path).unwrap_or(path))
-            .any(|ignored| canonical.starts_with(ignored))
-    }
-
-    fn prompt_path_for_entry(
-        &self,
-        _root: &SkillRoot,
-        _skill_dir: &Path,
-        skill_file: &Path,
-        _metadata: &SkillMetadata,
-        _context: &DiscoveryContext,
-    ) -> Option<String> {
-        Some(skill_file.display().to_string())
-    }
-
-    fn visibility(
-        &self,
-        _skill_dir: &Path,
-        metadata: &SkillMetadata,
-        context: &DiscoveryContext,
-    ) -> SkillVisibility {
-        if grok_config_values(context, "disabled")
-            .iter()
-            .any(|name| normalize_grok_name(name) == normalize_grok_name(&metadata.name))
-        {
-            return SkillVisibility::ManualOnly;
-        }
-        frontmatter_visibility(metadata)
-    }
+    // Effective discovery comes only from the native inspector. Skill folders
+    // cannot substitute for the host's trust and effective configuration.
+    fn roots(&self, _context: &DiscoveryContext) -> Vec<SkillRoot> { Vec::new() }
+    fn name_collision(&self) -> NameCollision { NameCollision::KeepAll }
+    fn visibility(&self, _skill_dir: &Path, _metadata: &SkillMetadata,
+        _context: &DiscoveryContext) -> SkillVisibility { SkillVisibility::Unverified }
 
     fn render_visible_metadata(&self, skills: &[EffectiveSkill]) -> String {
         if skills.is_empty() {
@@ -1590,50 +2367,140 @@ impl AgentSkillPolicy for GrokAdapter {
     }
 }
 
+impl OpenClawPolicy {
+    fn invocation_flag(metadata: &SkillMetadata, key: &str, fallback: bool) -> bool {
+        let value = fs::read_to_string(&metadata.source_path).ok().and_then(|content|
+            yaml_frontmatter(&content).and_then(|frontmatter|
+                serde_yaml::from_str::<serde_yaml::Value>(frontmatter).ok()));
+        match value.as_ref().and_then(|value| value.get(key)) {
+            Some(serde_yaml::Value::Bool(value)) => *value,
+            Some(serde_yaml::Value::String(value)) => match value.trim().to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" | "on" => true,
+                "false" | "0" | "no" | "off" => false,
+                _ => fallback,
+            },
+            _ => fallback,
+        }
+    }
+
+    fn roots_from_snapshot(context: &DiscoveryContext, snapshot: &crate::agents::OpenClawSnapshot) -> Vec<SkillRoot> {
+        let state_dir = &snapshot.state;
+        use OpenClawRootBoundary::{Contained, SkillOnly, TrustedTargets};
+        let config = &snapshot.config;
+        let routes = &snapshot.routes;
+        let cwd = crate::project_discovery::path_identity(&context.cwd);
+        let matching = routes.iter().filter(|(_, path)| crate::project_discovery::path_identity(path) == cwd).collect::<Vec<_>>();
+        let selected = if matching.len() == 1 { matching.first().copied() }
+            else if matching.is_empty() && routes.len() == 1 { routes.first() } else { None };
+        let workspace = selected.map(|(_, path)| path.as_path()).unwrap_or(&context.cwd);
+        let mut roots = Vec::new();
+        if !is_global_context(context) {
+            roots.push(SkillRoot::new(workspace.join("skills"), SkillScope::Local).openclaw(TrustedTargets));
+            roots.push(SkillRoot::new(workspace.join(".agents/skills"), SkillScope::Local).openclaw(TrustedTargets));
+        }
+        if crate::project_discovery::path_identity(&state_dir) == crate::project_discovery::path_identity(&snapshot.effective_home.join(".openclaw")) {
+            roots.push(SkillRoot::new(context.home.join(".agents/skills"), SkillScope::User).openclaw(SkillOnly));
+        }
+        roots.push(SkillRoot::new(state_dir.join("skills"), SkillScope::User).openclaw(SkillOnly));
+        if !is_global_context(context) {
+            if let Some((id, _)) = selected {
+                let Ok(agent_dir) = crate::agents::openclaw_agent_dir(config, id, state_dir, &context.home) else { return Vec::new(); };
+                roots.push(SkillRoot::new(agent_dir.join("workshop-skills"), SkillScope::User).openclaw(Contained));
+            }
+        }
+        let bundled = env::var_os("OPENCLAW_BUNDLED_SKILLS_DIR").filter(|v| !v.is_empty())
+            .map(|path| resolve_agent_path(&path.to_string_lossy(), &context.home, &context.cwd))
+            .or_else(|| crate::agents::openclaw_bundled_skills_dir(&context.home));
+        if let Some(path) = bundled {
+            let mut root = SkillRoot::new(path, SkillScope::System).openclaw(Contained);
+            root.source = SkillSource::Builtin;
+            roots.push(root);
+        }
+        roots.extend(openclaw_plugin_roots(&config, &state_dir, context).into_iter().map(|root| root.openclaw(TrustedTargets)));
+        roots.extend(openclaw_extra_skill_dirs(&config, context).into_iter().rev()
+            .map(|path| SkillRoot::new(path, SkillScope::User).openclaw(TrustedTargets)));
+        // An execution cwd is lower precedence than the configured agent catalog.
+        // It contributes only its own roots; repository ancestors are never walked.
+        if !is_global_context(context) && crate::project_discovery::path_identity(workspace) != cwd {
+            roots.push(SkillRoot::new(context.cwd.join("skills"), SkillScope::Local).openclaw(TrustedTargets));
+            roots.push(SkillRoot::new(context.cwd.join(".agents/skills"), SkillScope::Local).openclaw(TrustedTargets));
+        }
+        roots
+    }
+
+    fn entry_enabled(
+        root: &SkillRoot, dir: &Path, file: &Path, metadata: &SkillMetadata,
+        context: &DiscoveryContext, snapshot: &crate::agents::OpenClawSnapshot,
+    ) -> bool {
+        let Ok(real_dir) = dir.canonicalize() else { return false; };
+        if !file.canonicalize().is_ok_and(|file| file.starts_with(&real_dir)) { return false; }
+        let contained = root.path.canonicalize().is_ok_and(|root| real_dir.starts_with(root));
+        let config = &snapshot.config;
+        if root.source == SkillSource::Builtin && config.pointer("/skills/allowBundled").and_then(|v| v.as_array())
+            .is_some_and(|names| !names.iter().any(|name| name.as_str() == Some(metadata.name.as_str()))) {
+            return false;
+        }
+        let admitted = match root.openclaw_boundary.as_ref() {
+            Some(OpenClawRootBoundary::SkillOnly) => true,
+            Some(OpenClawRootBoundary::TrustedTargets) => contained || crate::agents::openclaw_target_is_trusted(
+                &root.path, &real_dir, &config, &context.home),
+            _ => contained,
+        };
+        admitted && !openclaw_disabled_skills(config).contains(&metadata.name)
+    }
+}
+
+/// The native configuration is an immutable observation during one estimate.
+struct OpenClawSnapshotPolicy { snapshot: crate::agents::OpenClawSnapshot }
+
+impl AgentSkillPolicy for OpenClawSnapshotPolicy {
+    fn agent(&self) -> AgentKind { AgentKind::OpenClaw }
+    fn roots(&self, context: &DiscoveryContext) -> Vec<SkillRoot> {
+        OpenClawPolicy::roots_from_snapshot(context, &self.snapshot)
+    }
+    fn is_enabled_for_entry(&self, root: &SkillRoot, dir: &Path, file: &Path, metadata: &SkillMetadata, context: &DiscoveryContext) -> bool {
+        OpenClawPolicy::entry_enabled(root, dir, file, metadata, context, &self.snapshot)
+    }
+    fn name_collision(&self) -> NameCollision { OpenClawPolicy.name_collision() }
+    fn user_invocable(&self, dir: &Path, metadata: &SkillMetadata, context: &DiscoveryContext) -> bool {
+        OpenClawPolicy.user_invocable(dir, metadata, context)
+    }
+    fn visibility(&self, dir: &Path, metadata: &SkillMetadata, context: &DiscoveryContext) -> SkillVisibility {
+        OpenClawPolicy.visibility(dir, metadata, context)
+    }
+    fn render_visible_metadata(&self, skills: &[EffectiveSkill]) -> String { OpenClawPolicy.render_visible_metadata(skills) }
+    fn estimate_tokens(&self, rendered: &str) -> usize { OpenClawPolicy.estimate_tokens(rendered) }
+}
+
 impl AgentSkillPolicy for OpenClawPolicy {
     fn agent(&self) -> AgentKind {
         AgentKind::OpenClaw
     }
 
     fn roots(&self, context: &DiscoveryContext) -> Vec<SkillRoot> {
-        let state_dir = openclaw_state_dir(context);
-        let config = openclaw_config(context);
-        let mut roots = Vec::new();
-        if !is_global_context(context) {
-            roots.push(SkillRoot::new(
-                context.cwd.join("skills"),
-                SkillScope::Local,
-            ));
-            roots.push(SkillRoot::new(
-                context.cwd.join(".agents/skills"),
-                SkillScope::Local,
-            ));
+        match openclaw_config(context) {
+            Ok(snapshot) => Self::roots_from_snapshot(context, &snapshot),
+            Err(_) => Vec::new(),
         }
-        roots.push(SkillRoot::new(
-            context.home.join(".agents/skills"),
-            SkillScope::User,
-        ));
-        roots.push(SkillRoot::new(state_dir.join("skills"), SkillScope::User));
-        roots.extend(
-            openclaw_extra_skill_dirs(&config, context)
-                .into_iter()
-                .map(|path| SkillRoot::new(path, SkillScope::User)),
-        );
-        roots.extend(openclaw_plugin_roots(&config, &state_dir, context));
-        roots
     }
 
-    fn is_enabled(
-        &self,
-        _skill_dir: &Path,
-        metadata: &SkillMetadata,
+    fn is_enabled_for_entry(
+        &self, root: &SkillRoot, dir: &Path, file: &Path, metadata: &SkillMetadata,
         context: &DiscoveryContext,
     ) -> bool {
-        !openclaw_disabled_skills(&openclaw_config(context)).contains(&metadata.name)
+        openclaw_config(context).is_ok_and(|snapshot| Self::entry_enabled(root, dir, file, metadata, context, &snapshot))
+    }
+
+    fn is_enabled(&self, _: &Path, metadata: &SkillMetadata, context: &DiscoveryContext) -> bool {
+        openclaw_config(context).is_ok_and(|snapshot| !openclaw_disabled_skills(&snapshot.config).contains(&metadata.name))
     }
 
     fn name_collision(&self) -> NameCollision {
         NameCollision::FirstWins
+    }
+
+    fn user_invocable(&self, _: &Path, metadata: &SkillMetadata, _: &DiscoveryContext) -> bool {
+        Self::invocation_flag(metadata, "user-invocable", true)
     }
 
     fn visibility(
@@ -1642,7 +2509,15 @@ impl AgentSkillPolicy for OpenClawPolicy {
         metadata: &SkillMetadata,
         _context: &DiscoveryContext,
     ) -> SkillVisibility {
-        frontmatter_visibility(metadata)
+        if Self::invocation_flag(metadata, "disable-model-invocation", false) {
+            if Self::invocation_flag(metadata, "user-invocable", true) {
+                SkillVisibility::ManualOnly
+            } else {
+                SkillVisibility::Disabled
+            }
+        } else {
+            SkillVisibility::Automatic
+        }
     }
 
     fn render_visible_metadata(&self, skills: &[EffectiveSkill]) -> String {
@@ -1677,14 +2552,9 @@ impl AgentSkillPolicy for HermesPolicy {
     }
 
     fn roots(&self, context: &DiscoveryContext) -> Vec<SkillRoot> {
-        let hermes_home = hermes_home(context);
-        let mut roots = vec![SkillRoot::new(hermes_home.join("skills"), SkillScope::User)];
-        roots.extend(
-            hermes_external_skill_dirs(context, &hermes_home)
-                .into_iter()
-                .map(|path| SkillRoot::new(path, SkillScope::User)),
-        );
-        roots
+        crate::agents::hermes_snapshot(&context.home, &context.cwd).map(|snapshot| snapshot.roots.into_iter()
+            .map(|(path, tier)| SkillRoot::new(path, if tier == 0 { SkillScope::Repository } else { SkillScope::User })).collect())
+            .unwrap_or_default()
     }
 
     fn name_collision(&self) -> NameCollision {
@@ -1748,82 +2618,6 @@ fn claude_config_dir(context: &DiscoveryContext) -> PathBuf {
     env::var_os("CLAUDE_CONFIG_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| context.home.join(".claude"))
-}
-
-fn grok_home(context: &DiscoveryContext) -> PathBuf {
-    env::var_os("GROK_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| context.home.join(".grok"))
-}
-
-fn grok_configured_skill_roots(context: &DiscoveryContext) -> Vec<SkillRoot> {
-    let grok_home = grok_home(context);
-    grok_config_values(context, "paths")
-        .into_iter()
-        .map(|value| resolve_agent_path(&value, &context.home, &grok_home))
-        .map(|path| {
-            if path.is_file() {
-                SkillRoot::exact(path, SkillScope::User)
-            } else {
-                SkillRoot::new(path, SkillScope::User)
-            }
-        })
-        .collect()
-}
-
-fn grok_config_values(context: &DiscoveryContext, key: &str) -> Vec<String> {
-    let Ok(config) = fs::read_to_string(grok_home(context).join("config.toml")) else {
-        return Vec::new();
-    };
-    let mut in_skills = false;
-    let mut values = Vec::new();
-    for raw_line in config.lines() {
-        let line = raw_line.trim();
-        if line == "[skills]" {
-            in_skills = true;
-            continue;
-        }
-        if line.starts_with('[') {
-            in_skills = false;
-            continue;
-        }
-        if !in_skills
-            || !line
-                .split_once('=')
-                .is_some_and(|(candidate, _)| candidate.trim() == key)
-        {
-            continue;
-        }
-        let Some((_, value)) = line.split_once('=') else {
-            continue;
-        };
-        values.extend(
-            value
-                .trim()
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .split(',')
-                .map(str::trim)
-                .filter_map(|value| value.strip_prefix('"').and_then(|v| v.strip_suffix('"')))
-                .map(str::to_string),
-        );
-    }
-    values
-}
-
-fn normalize_grok_name(name: &str) -> String {
-    let mut normalized = String::new();
-    let mut previous_dash = false;
-    for character in name.trim().to_ascii_lowercase().chars() {
-        if character.is_ascii_alphanumeric() {
-            normalized.push(character);
-            previous_dash = false;
-        } else if !previous_dash && !normalized.is_empty() {
-            normalized.push('-');
-            previous_dash = true;
-        }
-    }
-    normalized.trim_end_matches('-').chars().take(64).collect()
 }
 
 fn pi_agent_dir(context: &DiscoveryContext) -> PathBuf {
@@ -2165,22 +2959,8 @@ fn yaml_opencode_autoinvoke_disabled(value: Option<&serde_yaml::Value>) -> bool 
     autoinvoke.as_bool() == Some(false) || autoinvoke.as_str() == Some("false")
 }
 
-fn openclaw_state_dir(context: &DiscoveryContext) -> PathBuf {
-    env::var_os("OPENCLAW_STATE_DIR")
-        .or_else(|| env::var_os("CLAWDBOT_STATE_DIR"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| context.home.join(".openclaw"))
-}
-
-fn openclaw_config(context: &DiscoveryContext) -> serde_json::Value {
-    let state_dir = openclaw_state_dir(context);
-    let path = env::var_os("OPENCLAW_CONFIG_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| state_dir.join("openclaw.json"));
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|content| serde_json::from_str(&normalize_jsonc(&content)).ok())
-        .unwrap_or(serde_json::Value::Null)
+fn openclaw_config(context: &DiscoveryContext) -> std::result::Result<crate::agents::OpenClawSnapshot, crate::agents::OpenClawConfigFailure> {
+    crate::agents::openclaw_snapshot(&context.home)
 }
 
 fn openclaw_extra_skill_dirs(
@@ -2193,7 +2973,7 @@ fn openclaw_extra_skill_dirs(
         .into_iter()
         .flatten()
         .filter_map(|value| value.as_str())
-        .map(|path| resolve_agent_path(path, &context.home, &context.cwd))
+        .filter_map(|path| crate::agents::openclaw_user_path(path, &context.home).ok())
         .collect()
 }
 
@@ -2252,7 +3032,7 @@ fn openclaw_plugin_roots(
             paths
                 .iter()
                 .filter_map(|value| value.as_str())
-                .map(|value| resolve_agent_path(value, &context.home, state_dir)),
+                .filter_map(|value| crate::agents::openclaw_user_path(value, &context.home).ok()),
         );
     }
     let mut seen = HashSet::new();
@@ -2315,30 +3095,6 @@ fn openclaw_plugin_roots(
         }
     }
     roots
-}
-
-fn hermes_home(context: &DiscoveryContext) -> PathBuf {
-    env::var_os("HERMES_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| context.home.join(".hermes"))
-}
-
-fn hermes_external_skill_dirs(context: &DiscoveryContext, hermes_home: &Path) -> Vec<PathBuf> {
-    let Ok(content) = fs::read_to_string(hermes_home.join("config.yaml")) else {
-        return Vec::new();
-    };
-    let Ok(config) = serde_yaml::from_str::<serde_yaml::Value>(&content) else {
-        return Vec::new();
-    };
-    config
-        .get("skills")
-        .and_then(|skills| skills.get("external_dirs"))
-        .and_then(|value| value.as_sequence())
-        .into_iter()
-        .flatten()
-        .filter_map(|value| value.as_str())
-        .map(|path| resolve_agent_path(path, &context.home, hermes_home))
-        .collect()
 }
 
 fn claude_skill_override(context: &DiscoveryContext, name: &str) -> Option<String> {
@@ -2983,11 +3739,8 @@ fn codex_plugin_skill_roots(
     }
 }
 
-fn codex_plugin_roots(codex_home: &Path) -> Vec<SkillRoot> {
-    let Ok(config) = fs::read_to_string(codex_home.join("config.toml")) else {
-        return Vec::new();
-    };
-    enabled_plugin_ids(&config)
+fn codex_plugin_roots(codex_home: &Path, config: &toml::Value) -> Vec<SkillRoot> {
+    enabled_plugin_ids_from_value(config)
         .into_iter()
         .filter_map(|id| {
             let (plugin, marketplace) = id.rsplit_once('@')?;
@@ -3008,10 +3761,15 @@ fn codex_plugin_roots(codex_home: &Path) -> Vec<SkillRoot> {
         .collect()
 }
 
+#[cfg(test)]
 fn enabled_plugin_ids(config: &str) -> Vec<String> {
     let Ok(config) = toml::from_str::<toml::Value>(config) else {
         return Vec::new();
     };
+    enabled_plugin_ids_from_value(&config)
+}
+
+fn enabled_plugin_ids_from_value(config: &toml::Value) -> Vec<String> {
     let Some(plugins) = config.get("plugins").and_then(toml::Value::as_table) else {
         return Vec::new();
     };
@@ -3031,41 +3789,6 @@ fn enabled_plugin_ids(config: &str) -> Vec<String> {
     enabled
 }
 
-fn codex_disabled_skills(codex_home: &Path, home: &Path) -> HashSet<PathBuf> {
-    let Ok(config) = fs::read_to_string(codex_home.join("config.toml")) else {
-        return HashSet::new();
-    };
-    skill_config_entries(&config)
-        .into_iter()
-        .filter(|(_, enabled)| !enabled)
-        .map(|(path, _)| {
-            let path = resolve_agent_path(&path.to_string_lossy(), home, codex_home);
-            fs::canonicalize(&path).unwrap_or(path)
-        })
-        .collect()
-}
-
-fn skill_config_entries(config: &str) -> Vec<(PathBuf, bool)> {
-    let Ok(config) = toml::from_str::<toml::Value>(config) else {
-        return Vec::new();
-    };
-    config
-        .get("skills")
-        .and_then(|skills| skills.get("config"))
-        .and_then(toml::Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| {
-            let path = entry.get("path")?.as_str()?;
-            let enabled = entry
-                .get("enabled")
-                .and_then(toml::Value::as_bool)
-                .unwrap_or(true);
-            Some((PathBuf::from(path), enabled))
-        })
-        .collect()
-}
-
 fn cwd_to_boundary(cwd: &Path, boundary: Option<&Path>) -> Vec<PathBuf> {
     let mut result = Vec::new();
     for dir in cwd.ancestors() {
@@ -3082,6 +3805,9 @@ fn read_metadata(path: &Path) -> Option<SkillMetadata> {
 }
 
 fn read_metadata_with_profile(path: &Path, profile: MetadataProfile) -> Option<SkillMetadata> {
+    if matches!(profile, MetadataProfile::WorkBuddy) {
+        return desktop_agents::workbuddy_metadata(path);
+    }
     let content = fs::read_to_string(path).ok()?;
     let fallback = if path.file_name().is_some_and(|name| name == "SKILL.md") {
         path.parent()?.file_name()?.to_string_lossy().into_owned()
@@ -3318,6 +4044,14 @@ mod tests {
         .unwrap();
     }
 
+    // Native-report contract fixtures; never launch an Agent from unit tests.
+    fn grok_report_fixture(context: &DiscoveryContext, skills: serde_json::Value) -> AgentContextEstimate {
+        let report = serde_json::json!({"grokVersion":"1.0.50", "cwd":context.cwd,
+            "projectRoot":context.repository_root, "projectTrusted":true, "skills":skills});
+        adapters::estimate_grok_catalog(context,
+            grok_state::parse_json(&serde_json::to_vec(&report).unwrap()).unwrap())
+    }
+
     #[test]
     fn manual_skills_are_discovered_but_not_counted() {
         let temp = tempdir().unwrap();
@@ -3375,10 +4109,9 @@ mod tests {
             &ClaudeCodePolicy as &dyn AgentSkillPolicy,
             &CursorPolicy,
             &OpenCodePolicy,
-            &CopilotPolicy,
+            &CopilotPolicy { roots: Vec::new() },
             &DroidPolicy,
             &PiPolicy,
-            &GrokPolicy,
             &OpenClawPolicy,
         ] {
             assert_eq!(
@@ -3388,6 +4121,13 @@ mod tests {
                 policy.agent().label()
             );
         }
+        let grok = grok_report_fixture(&context, serde_json::json!([{
+            "name":"manual", "description":"Test", "source":{"type":"project","path":skill.join("SKILL.md")},
+            "userInvocable":true
+        }]));
+        assert_eq!(grok.skills[0].visibility, SkillVisibility::ManualOnly);
+        assert_eq!(grok.model_visible_count, 0);
+        assert_eq!(grok.manual_only_count, 1);
 
         for policy in [
             &AntigravityPolicy as &dyn AgentSkillPolicy,
@@ -3425,7 +4165,9 @@ mod tests {
             repository_root: Some(repo),
         };
         let estimate = estimate_with_policy(&PiPolicy, &context);
-        assert_eq!(estimate.discovered_count, 1);
+        assert_eq!(estimate.discovered_count, 2);
+        assert_eq!(estimate.model_visible_count, 1);
+        assert_eq!(estimate.skills.iter().filter(|skill| skill.visibility == SkillVisibility::Shadowed).count(), 1);
         assert!(estimate.skills[0].path.starts_with(cwd));
     }
 
@@ -3577,48 +4319,17 @@ mod tests {
     }
 
     #[test]
-    fn codex_skill_config_decodes_windows_paths_and_ignores_key_order() {
-        let config = r#"
-[[skills.config]]
-enabled = false
-path = "C:\\Users\\test\\skills\\demo\\SKILL.md"
-[[skills.config]]
-path = 'D:\skills\active\SKILL.md'
-"#;
-        assert_eq!(
-            skill_config_entries(config),
-            vec![
-                (PathBuf::from(r"C:\Users\test\skills\demo\SKILL.md"), false),
-                (PathBuf::from(r"D:\skills\active\SKILL.md"), true),
-            ]
-        );
-    }
-
-    #[test]
-    fn codex_config_parsers_only_keep_enabled_plugins_and_disabled_skills() {
-        let temp = tempdir().unwrap();
-        let skill = temp.path().join("demo/SKILL.md");
-        fs::create_dir_all(skill.parent().unwrap()).unwrap();
-        fs::write(&skill, "---\nname: demo\ndescription: Test\n---\n").unwrap();
-        let config = format!(
+    fn codex_config_parser_only_keeps_enabled_plugins() {
+        let config =
             "[plugins.\"on@market\"]\nenabled = true\n\
-             [plugins.\"off@market\"]\nenabled = false\n\
-             [[skills.config]]\npath = {}\nenabled = false\n",
-            toml::Value::String(skill.to_string_lossy().into_owned())
-        );
-        fs::write(temp.path().join("config.toml"), config.clone()).unwrap();
-        assert_eq!(enabled_plugin_ids(&config), vec!["on@market"]);
+             [plugins.\"off@market\"]\nenabled = false\n";
+        assert_eq!(enabled_plugin_ids(config), vec!["on@market"]);
         let dotted_config = "[plugins]\n\
              \"on@market\".enabled = true\n\
              \"off@market\".enabled = false\n";
         assert_eq!(enabled_plugin_ids(dotted_config), vec!["on@market"]);
         assert!(enabled_plugin_ids("[plugins\ninvalid").is_empty());
         assert!(enabled_plugin_ids("[plugins]\ninvalid = true").is_empty());
-        assert!(
-            codex_disabled_skills(temp.path(), temp.path())
-                .contains(&fs::canonicalize(&skill).unwrap())
-        );
-        assert_eq!(skill_config_entries(&config), vec![(skill, false)]);
     }
 
     #[test]
@@ -3694,24 +4405,18 @@ path = 'D:\skills\active\SKILL.md'
     }
 
     #[test]
-    fn grok_loads_flat_commands_and_renders_startup_listing_fields() {
+    fn grok_preserves_native_command_metadata_and_listing_fields() {
         let temp = tempdir().unwrap();
         let home = temp.path().join("home");
         let project = temp.path().join("project");
         let commands = project.join(".grok/commands");
         fs::create_dir_all(&commands).unwrap();
-        fs::create_dir_all(commands.join("nested")).unwrap();
         fs::write(commands.join("Release Notes.md"), "Prepare release notes").unwrap();
-        fs::write(
-            commands.join("nested/SKILL.md"),
-            "---\nname: nested-command\ndescription: Must stay hidden\n---\n",
-        )
-        .unwrap();
-
-        let estimate = estimate_project_with_home(&project, &home)
-            .into_iter()
-            .find(|estimate| estimate.agent == AgentKind::Grok)
-            .unwrap();
+        let context = DiscoveryContext { cwd: project, home, repository_root: None };
+        let estimate = grok_report_fixture(&context, serde_json::json!([{
+            "name":"release-notes", "description":"Prepare release notes",
+            "source":{"type":"project","path":commands.join("Release Notes.md")}, "userInvocable":true
+        }]));
         let command = estimate
             .skills
             .iter()
@@ -3722,12 +4427,43 @@ path = 'D:\skills\active\SKILL.md'
         assert!(rendered.contains("The following skills are available for use:"));
         assert!(rendered.contains("Absolute path:"));
         assert!(rendered.contains(&command.path.display().to_string()));
-        assert!(
-            !estimate
-                .skills
-                .iter()
-                .any(|skill| skill.name == "nested-command")
-        );
+        assert!(estimate.diagnostic.is_none());
+        assert_eq!(estimate.skills.len(), 1);
+    }
+
+    #[test]
+    fn grok_unknown_sources_keep_safe_metadata_without_effective_paths_or_counts() {
+        let temp = tempdir().unwrap();
+        let context = DiscoveryContext { cwd: temp.path().join("project"), home: temp.path().join("home"), repository_root: None };
+        let known = temp.path().join("known/SKILL.md");
+        fs::create_dir_all(known.parent().unwrap()).unwrap();
+        fs::write(&known, "---\nname: known\ndescription: verified header\n---\n").unwrap();
+        let hint = temp.path().join("not-a-scannable-skill");
+        let estimate = grok_report_fixture(&context, serde_json::json!([
+            {"name":"known","description":"supported","source":{"type":"user","path":known},"userInvocable":true},
+            {"name":"plugin-row","description":"plugin description","source":{"type":"plugin","path":hint,"pluginName":"owned-plugin"},"userInvocable":true},
+            {"name":"builtin-row","description":"builtin description","source":{"type":"builtin"},"userInvocable":false},
+            {"name":"managed-row","description":"managed description","source":{"type":"managed"},"userInvocable":true,"disabled":true},
+            {"name":"future-row","description":"future description","source":{"type":"future-provider","path":hint,"privatePayload":"synthetic-excluded"},"userInvocable":true,"invocableAs":"future-alias"}
+        ]));
+        assert_eq!(estimate.skills.len(), 1);
+        assert_eq!(estimate.skills[0].path, known);
+        assert_eq!(estimate.skills[0].visibility, SkillVisibility::Automatic);
+        let metadata = &estimate.diagnostic.as_ref().unwrap().metadata_only;
+        assert_eq!(metadata.len(), 4);
+        assert_eq!(metadata[0].source_path.as_deref(), Some(hint.as_path()));
+        assert_eq!(metadata[0].source_identity.as_deref(), Some("owned-plugin"));
+        assert!(metadata[1].source_path.is_none() && metadata[2].source_path.is_none());
+        assert!(metadata[2].disabled);
+        assert_eq!(metadata[3].source_type, "future-provider");
+        assert_eq!(metadata[3].source_path.as_deref(), Some(hint.as_path()));
+        assert_eq!(metadata[3].invocation_name.as_deref(), Some("future-alias"));
+        let json = serde_json::to_value(&estimate).unwrap();
+        for count in ["discovered_count", "model_visible_count", "manual_only_count", "name_only_count", "conditional_count", "estimated_tokens"] {
+            assert!(json[count].is_null(), "{count}");
+        }
+        assert!(!json.to_string().contains("synthetic-excluded"));
+        assert!(!hint.exists());
     }
 
     #[test]
@@ -3742,7 +4478,7 @@ path = 'D:\skills\active\SKILL.md'
             EffectiveSkill {
                 id: "pdf".into(), name: "pdf".into(), description: agent.label().into(), when_to_use: None,
                 path, root_path: None, prompt_path: None, scope: SkillScope::Repository,
-                visibility: SkillVisibility::Automatic, source: SkillSource::Filesystem,
+                user_invocable: true, visibility: SkillVisibility::Automatic, source: SkillSource::Filesystem,
             }
         }).collect::<Vec<_>>();
         let groups = group_effective_skills(agents.iter().copied().zip(skills.iter()));
@@ -3760,7 +4496,7 @@ path = 'D:\skills\active\SKILL.md'
         let builtin = EffectiveSkill {
             id: "pdf".into(), name: "pdf".into(), description: String::new(), when_to_use: None,
             path: "/virtual/pdf".into(), root_path: None, prompt_path: None,
-            scope: SkillScope::System, visibility: SkillVisibility::Automatic, source: SkillSource::Builtin,
+            scope: SkillScope::System, user_invocable: true, visibility: SkillVisibility::Automatic, source: SkillSource::Builtin,
         };
         let mut first_plugin = builtin.clone();
         first_plugin.source = SkillSource::Plugin { id: "first".into(), display_name: "PDF".into() };
@@ -3786,7 +4522,13 @@ path = 'D:\skills\active\SKILL.md'
         let command = commands.join("build_from_zero.md");
         fs::write(&command, "Build from zero").unwrap();
 
-        let estimates = estimate_project_with_home(&project, &home);
+        let mut estimates = estimate_project_with_home(&project, &home);
+        let context = DiscoveryContext { cwd: project, home, repository_root: None };
+        *estimates.iter_mut().find(|estimate| estimate.agent == AgentKind::Grok).unwrap() =
+            grok_report_fixture(&context, serde_json::json!([{
+                "name":"build-from-zero", "description":"Build from zero",
+                "source":{"type":"user","path":command}, "userInvocable":true
+            }]));
         let groups = group_effective_skills(
             estimates
                 .iter()
@@ -3824,7 +4566,7 @@ path = 'D:\skills\active\SKILL.md'
     }
 
     #[test]
-    fn grok_rekeys_same_scope_frontmatter_collisions_by_directory() {
+    fn grok_retains_native_collision_names_aliases_and_distinct_sources() {
         let temp = tempdir().unwrap();
         let home = temp.path().join("home");
         let project = temp.path().join("project");
@@ -3839,17 +4581,20 @@ path = 'D:\skills\active\SKILL.md'
             .unwrap();
         }
 
-        let estimate = estimate_project_with_home(&project, &home)
-            .into_iter()
-            .find(|estimate| estimate.agent == AgentKind::Grok)
-            .unwrap();
+        let context = DiscoveryContext { cwd: project, home, repository_root: None };
+        let estimate = grok_report_fixture(&context, serde_json::json!([
+            {"name":"shared-name", "description":"Shared", "source":{"type":"project","path":skills.join("original/SKILL.md")}, "userInvocable":true},
+            {"name":"copied", "description":"Shared", "source":{"type":"project","path":skills.join("copied/SKILL.md")}, "userInvocable":true,"collidesWith":"shared-name","invocableAs":"native-qualified-alias"}
+        ]));
         let names = estimate
             .skills
             .iter()
             .map(|skill| skill.name.as_str())
             .collect::<HashSet<_>>();
         assert!(names.contains("shared-name"));
-        assert!(names.contains("copied") || names.contains("original"));
+        assert!(names.contains("copied"));
+        assert_eq!(estimate.skills[1].id, "native-qualified-alias");
+        assert_ne!(estimate.skills[0].path, estimate.skills[1].path);
     }
 
     #[test]
@@ -4123,7 +4868,6 @@ path = 'D:\skills\active\SKILL.md'
             AgentKind::Codex,
             AgentKind::OpenCode,
             AgentKind::Pi,
-            AgentKind::Grok,
         ] {
             let empty_count = empty
                 .iter()
@@ -4141,6 +4885,11 @@ path = 'D:\skills\active\SKILL.md'
                     .iter()
                     .any(|skill| skill.name == "selected-project-only")
             );
+        }
+        for estimates in [&empty, &selected] {
+            let grok = estimates.iter().find(|estimate| estimate.agent == AgentKind::Grok).unwrap();
+            assert!(grok.diagnostic.is_some() && grok.skills.is_empty());
+            assert!(serde_json::to_value(grok).unwrap()["discovered_count"].is_null());
         }
         assert!(!empty.iter().any(|estimate| estimate.agent.is_global_only()));
         assert!(
@@ -4185,7 +4934,7 @@ path = 'D:\skills\active\SKILL.md'
                 .iter()
                 .filter(|estimate| estimate.agent.is_global_only())
                 .count(),
-            2
+            0
         );
     }
 
@@ -4205,7 +4954,9 @@ path = 'D:\skills\active\SKILL.md'
         };
         for policy in [
             &CursorPolicy as &dyn AgentSkillPolicy,
-            &CopilotPolicy as &dyn AgentSkillPolicy,
+            &CopilotPolicy { roots: copilot_roots_from(&context,
+                &context.home.join(".copilot"), &serde_json::json!({}), None, true).unwrap() }
+                as &dyn AgentSkillPolicy,
             &AmpPolicy as &dyn AgentSkillPolicy,
         ] {
             let estimate = estimate_with_policy(policy, &context);
@@ -4225,7 +4976,7 @@ path = 'D:\skills\active\SKILL.md'
     }
 
     #[test]
-    fn cursor_deduplicates_same_named_skills_across_compatible_roots() {
+    fn cursor_keeps_same_named_sources_and_shadows_compatible_roots() {
         let temp = tempdir().unwrap();
         let repo = temp.path().join("repo");
         let home = temp.path().join("home");
@@ -4241,8 +4992,9 @@ path = 'D:\skills\active\SKILL.md'
         };
         let estimate = estimate_with_policy(&CursorPolicy, &context);
 
-        assert_eq!(estimate.discovered_count, 1);
+        assert_eq!(estimate.discovered_count, 3);
         assert_eq!(estimate.model_visible_count, 1);
+        assert_eq!(estimate.skills.iter().filter(|skill| skill.visibility == SkillVisibility::Shadowed).count(), 2);
         assert!(
             estimate.skills[0]
                 .path
@@ -4419,10 +5171,10 @@ path = 'D:\skills\active\SKILL.md'
         assert!(estimate_for_agents(&home, &home, &[]).is_empty());
         let estimates = estimate_for_agents(&home, &home, &agents);
         assert_eq!(estimates.iter().map(|estimate| estimate.agent).collect::<Vec<_>>(), [AgentKind::Codex, AgentKind::Grok]);
-        for estimate in estimates {
-            assert_eq!(estimate.discovered_count, 1);
-            assert_eq!(estimate.skills[0].name, "shared");
-        }
+        assert_eq!(estimates[0].discovered_count, 1);
+        assert_eq!(estimates[0].skills[0].name, "shared");
+        assert!(estimates[1].diagnostic.is_some() && estimates[1].skills.is_empty());
+        assert!(serde_json::to_value(&estimates[1]).unwrap()["discovered_count"].is_null());
     }
 
     #[test]
@@ -4556,6 +5308,32 @@ path = 'D:\skills\active\SKILL.md'
     }
 
     #[test]
+    fn openclaw_preserves_native_model_only_and_manual_invocation_metadata() {
+        let temp = tempdir().unwrap();
+        let file = temp.path().join("SKILL.md");
+        let context = DiscoveryContext {
+            cwd: temp.path().into(), home: temp.path().into(), repository_root: None,
+        };
+        let policy = OpenClawSnapshotPolicy { snapshot: crate::agents::OpenClawSnapshot {
+            config: serde_json::json!({}), state: temp.path().into(),
+            routes: Vec::new(), effective_home: temp.path().into(),
+        } };
+        for (flags, user_invocable, visibility) in [
+            ("", true, SkillVisibility::Automatic),
+            ("user-invocable: false\n", false, SkillVisibility::Automatic),
+            ("disable-model-invocation: true\n", true, SkillVisibility::ManualOnly),
+            ("user-invocable: false\ndisable-model-invocation: true\n", false, SkillVisibility::Disabled),
+            ("user-invocable: 'Off'\n", false, SkillVisibility::Automatic),
+            ("user-invocable: unknown\n", true, SkillVisibility::Automatic),
+        ] {
+            fs::write(&file, format!("---\nname: probe\ndescription: fixture\n{flags}---\nBody")).unwrap();
+            let metadata = read_metadata(&file).unwrap();
+            assert_eq!(policy.user_invocable(temp.path(), &metadata, &context), user_invocable);
+            assert_eq!(policy.visibility(temp.path(), &metadata, &context), visibility);
+        }
+    }
+
+    #[test]
     fn openclaw_prefers_workspace_and_groups_enabled_plugin_skills() {
         let temp = tempdir().unwrap();
         let home = temp.path().join("home");
@@ -4575,7 +5353,7 @@ path = 'D:\skills\active\SKILL.md'
         fs::create_dir_all(&state).unwrap();
         fs::write(
             state.join("openclaw.json"),
-            r#"{"plugins":{"enabled":true}}"#,
+            serde_json::to_vec(&serde_json::json!({"agents":{"defaults":{"workspace":workspace}},"plugins":{"enabled":true}})).unwrap(),
         )
         .unwrap();
         let context = DiscoveryContext {
@@ -4591,8 +5369,9 @@ path = 'D:\skills\active\SKILL.md'
                 .iter()
                 .filter(|skill| skill.name == "same")
                 .count(),
-            1
+            2
         );
+        assert_eq!(estimate.skills.iter().filter(|skill| skill.name == "same" && skill.visibility == SkillVisibility::Shadowed).count(), 1);
         assert!(
             estimate
                 .skills

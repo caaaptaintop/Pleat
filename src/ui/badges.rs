@@ -24,7 +24,7 @@ impl KitterApp {
             .items_center()
             .gap(px(4.))
             .flex_wrap();
-        for agent in self.model.installed_agents
+        for agent in crate::agents::AGENT_ICON_ORDER
             .iter()
             .copied()
             .filter(|agent| entry.agents.iter().any(|kind| kind.id() == agent.id))
@@ -79,7 +79,6 @@ impl KitterApp {
             .size(px(22.))
             .p(px(0.))
             .rounded(px(6.))
-            .tooltip(tooltip)
             .child(
                 div()
                     .id("project-agent-icon")
@@ -144,6 +143,11 @@ impl KitterApp {
                     }))
                     .into_any_element()
             };
+            // Keep the tooltip owned by the shortcut, so leaving Projects drops it.
+            let shortcut = div()
+                .id(ElementId::Name(format!("project-agent-tooltip-{}-{}", entry.path.display(), agent.id).into()))
+                .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+                .child(shortcut);
             if is_proma {
                 let mut seen = BTreeSet::new();
                 let inactive = entry
@@ -291,7 +295,7 @@ impl KitterApp {
         proma_inactive: bool,
         cx: &mut Context<Self>,
     ) -> Div {
-        let agents = self.model.installed_agents
+        let agents = crate::agents::AGENT_ICON_ORDER
             .iter()
             .filter(|agent| {
                 if agent.global_only {
@@ -312,7 +316,7 @@ impl KitterApp {
         proma_inactive: bool,
         cx: &mut Context<Self>,
     ) -> Div {
-        let agents = self.model.installed_agents
+        let agents = crate::agents::AGENT_ICON_ORDER
             .iter()
             .filter(|agent| kinds.iter().any(|kind| kind.id() == agent.id))
             .map(|agent| (agent.name, agent.icon_path))

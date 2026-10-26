@@ -1,6 +1,17 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 fn main() {
+    kitter::run_native_adaptation_reader_if_requested();
+    if let Some(code) = kitter::project_discovery::run_metadata_worker() {
+        std::process::exit(code);
+    }
+    #[cfg(feature = "compatibility-preview")]
+    if std::env::var_os("KITTER_PREVIEW_LAUNCHER_READY").as_deref()
+        != Some(std::ffi::OsStr::new("1"))
+    {
+        eprintln!("请通过候选应用入口启动预览。");
+        std::process::exit(125);
+    }
     let _ = fix_path_env::fix();
     #[cfg(target_os = "windows")]
     install_windows_panic_reporter();

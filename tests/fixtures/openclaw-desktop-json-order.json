@@ -1,0 +1,18 @@
+{
+  "producer_desktop_sha256": "81659adcaed2169c418bc0cd42b2ce1d1e3c7812bf99debb427170c9e15ab379",
+  "manifest": "{\"id\":\"pleat-openclaw-adaptation\",\"name\":\"Pleat managed skills\",\"version\":\"0.1.0\",\"description\":\"Managed skill body and local adaptation through native plugin tools\",\"contracts\":{\"tools\":[\"pleat_read_skill\"]},\"configSchema\":{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"pleatManagedProfileVersion\",\"pleatManagedAllowAdded\"],\"properties\":{\"pleatManagedProfileVersion\":{\"const\":1},\"pleatManagedAllowAdded\":{\"type\":\"boolean\"}}}}",
+  "package": "{\"name\":\"pleat-openclaw-adaptation\",\"version\":\"0.1.0\",\"type\":\"module\",\"openclaw\":{\"extensions\":[\"./index.js\"]}}",
+  "entry_order": [
+    "installationId",
+    "installationSkillPath",
+    "canonicalSourceRoot",
+    "sourceIdentity",
+    "scope",
+    "workspaceRoot"
+  ],
+  "reader_order": [
+    "schemaVersion",
+    "manager",
+    "readerExecutable"
+  ]
+}
