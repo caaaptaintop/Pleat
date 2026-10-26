@@ -429,7 +429,8 @@ const EXTRA_DIRECT_ROOTS: &[&str] = &[
 fn skill_root(path: &Path) -> bool {
     crate::agents::PROJECT_INSTALL_TARGETS
         .iter()
-        .any(|target| crate::agents::project_target_directory(*target).is_ok_and(|suffix| path.ends_with(suffix))
+        .any(|target| crate::agents::project_target_directory(*target).is_ok_and(|suffix|
+                suffix.parent().is_some_and(|parent| !parent.as_os_str().is_empty()) && path.ends_with(suffix))
             || dirs::home_dir().is_some_and(|home| crate::agents::global_target_root(&home, *target).is_ok_and(|root| path == root)))
         || EXTRA_DIRECT_ROOTS
             .iter()
@@ -439,13 +440,13 @@ fn skill_root(path: &Path) -> bool {
 fn agent_directory(path: &Path) -> bool {
     crate::agents::PROJECT_INSTALL_TARGETS.iter().any(|target| {
         crate::agents::project_target_directory(*target).ok().is_some_and(|suffix|
-            suffix.parent().is_some_and(|parent| path.ends_with(parent)))
+            suffix.parent().is_some_and(|parent| !parent.as_os_str().is_empty() && path.ends_with(parent)))
             || dirs::home_dir().is_some_and(|home| crate::agents::global_target_root(&home, *target)
                 .is_ok_and(|root| root.parent() == Some(path)))
     }) || EXTRA_DIRECT_ROOTS.iter().any(|root| {
         Path::new(root)
             .parent()
-            .is_some_and(|parent| path.ends_with(parent))
+            .is_some_and(|parent| !parent.as_os_str().is_empty() && path.ends_with(parent))
     })
 }
 
@@ -792,6 +793,20 @@ mod tests {
             &AtomicBool::new(false),
         )
         .unwrap()
+    }
+    #[test]
+    fn workspace_skills_root_does_not_classify_every_ancestor_as_an_agent_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(!skill_root(&temp.path().join("workspace/skills")));
+        assert!(skill_root(&temp.path().join(".agents/skills")));
+        assert!(!agent_directory(temp.path()));
+        assert!(!agent_directory(&temp.path().join("workspace")));
+        assert!(agent_directory(&temp.path().join(".agents")));
+        skill(&temp.path().join(".agents/skills/shared"), "shared");
+        skill(&temp.path().join("workspace/skills/not-an-agent"), "not-an-agent");
+        let scan = scan_home(temp.path());
+        assert_eq!(scan.candidates.len(), 1);
+        assert_eq!(scan.candidates[0].name, "shared");
     }
     #[test]
     fn marker_not_directory_name_defines_identity_and_aliases_are_merged() {

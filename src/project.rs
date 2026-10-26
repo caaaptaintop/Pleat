@@ -848,6 +848,7 @@ mod tests {
         assert_eq!(fs::read_dir(sentinel).unwrap().count(), 1);
     }
 
+    #[cfg(unix)]
     #[test]
     fn copilot_failed_multi_target_install_rolls_back_only_new_alias_entry() {
         use std::os::unix::fs::PermissionsExt;

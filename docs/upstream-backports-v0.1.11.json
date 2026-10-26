@@ -94,5 +94,15 @@
     "CRLF 修复仅覆盖现有 same_tree 使用路径；Npx lock hash 比较与 Git tree/materialized symlink 比较未升级到上游行为。",
     "既有已被重写为 HTTPS 的来源记录不会自动恢复 SSH；无法从现存记录推断原始私有来源。",
     "无真实私有仓库、远端导入、Agent/provider、真实配置/registry 写入验证；验证均为临时 fixture 和本地 shell stub。"
-  ]
+  ],
+  "release_followup_fixes": {
+    "adoption": "require an Agent parent for project-directory suffixes, rejecting an empty parent and unrelated bare skills directories; preserve explicit global roots and EXTRA known direct roots",
+    "regression": "new fixture failed before the fix at !agent_directory(temp.path()); existing adoption and library contracts remain enabled",
+    "test_contract_alignment": [
+      "include WorkBuddy in existing order assertion",
+      "separate ordinary copied-skill header roundtrip from adapted-copy update and registry-only mode-change contract; preserve raw upstream and private adaptation bytes",
+      "compile two symlink/POSIX-mode-only cases on Unix; ordinary cross-platform tests remain active"
+    ],
+    "native_Agent_acceptance_repeated": false
+  }
 }

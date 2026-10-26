@@ -633,6 +633,7 @@ thread_local! {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     #[test]
     fn copilot_removal_preserves_all_entries_when_unselected_alias_is_redirected() {
         use super::*;

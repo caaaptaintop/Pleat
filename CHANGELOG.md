@@ -7,6 +7,7 @@
 - Backport selected Kitter v0.2.2 fixes while keeping Pleat's current Agent adapters and UI. The full upstream plugin engine is not included. See [backport details](docs/upstream-backports-v0.1.11.json).
 - Preserve SSH and HTTPS repository URLs; compare CRLF/LF text conservatively; retain known update status when a source check fails or lacks a hash. Keep update caches with the selected library and reinstall only the requested skill.
 - Show Agent names on icon hover and matching/total skill counts when filtering.
+- Fix adoption scan pruning and false positives caused by a plain `skills` suffix; keep privacy exclusions and aliased source handling.
 - Use the static MSVC runtime for Windows builds and remove generated Python bytecode from the source tree.
 
 ## Distribution

@@ -1984,23 +1984,58 @@ mod tests {
     #[test]
     fn adaptation_keeps_source_entry_original_and_retains_manual_mode_on_update() {
         let (_temp, mut library, source, record) = copied_fixture();
-        library.set_trigger_mode_by_storage(&record.storage_name, TriggerMode::Manual).unwrap();
         let path = library.skill_path("demo").unwrap();
         fs::create_dir(path.join("local-data")).unwrap();
         fs::write(path.join("local-data/ADAPTATION.md"), "manual local instructions").unwrap();
+        library.set_trigger_mode_by_storage(&record.storage_name, TriggerMode::Manual).unwrap();
         let updated = "---\nname: demo\ndescription: upstream update\n---\n";
         fs::write(source.join("SKILL.md"), updated).unwrap();
         library.replace_by_storage(&source, record.storage_name.clone(), record.clone()).unwrap();
-        assert_eq!(fs::read_to_string(path.join("SKILL.md")).unwrap(), updated);
+        let effective = fs::read_to_string(path.join("SKILL.md")).unwrap();
+        assert!(effective.contains("description: upstream update"));
+        assert!(effective.contains("disable-model-invocation: true"));
+        assert_eq!(fs::read_to_string(source.join("SKILL.md")).unwrap(), updated);
         assert_eq!(library.trigger_mode_by_storage(&record.storage_name), TriggerMode::Manual);
         assert_eq!(fs::read_to_string(path.join("local-data/ADAPTATION.md")).unwrap(), "manual local instructions");
-        assert_eq!(library.registry.package_baselines[&record.storage_name], crate::update_protection::snapshot(&source).unwrap());
+        let effective_baseline = crate::update_protection::snapshot(&path).unwrap();
+        assert_eq!(library.registry.package_baselines[&record.storage_name], effective_baseline);
         library.set_trigger_mode_by_storage(&record.storage_name, TriggerMode::Automatic).unwrap();
-        assert_eq!(fs::read_to_string(path.join("SKILL.md")).unwrap(), updated);
+        assert_eq!(fs::read_to_string(path.join("SKILL.md")).unwrap(), effective);
+        assert_eq!(library.trigger_mode_by_storage(&record.storage_name), TriggerMode::Automatic);
+        library.set_trigger_mode_by_storage(&record.storage_name, TriggerMode::FollowSkill).unwrap();
+        assert_eq!(fs::read_to_string(path.join("SKILL.md")).unwrap(), effective);
+        assert_eq!(library.trigger_mode_by_storage(&record.storage_name), TriggerMode::FollowSkill);
+        assert_eq!(library.registry.package_baselines[&record.storage_name], effective_baseline);
+        assert_eq!(fs::read_to_string(source.join("SKILL.md")).unwrap(), updated);
+        assert_eq!(fs::read_to_string(path.join("local-data/ADAPTATION.md")).unwrap(), "manual local instructions");
+    }
+
+    #[test]
+    fn ordinary_copied_skill_headers_round_trip_without_changing_the_upstream_source() {
+        let (_temp, mut library, source, record) = copied_fixture();
+        let path = library.skill_path("demo").unwrap();
+        fs::create_dir(path.join("local-data")).unwrap();
+        fs::write(path.join("local-data/keep.txt"), "private fixture").unwrap();
+        library.set_trigger_mode_by_storage(&record.storage_name, TriggerMode::Manual).unwrap();
+        let updated = "---\nname: demo\ndescription: upstream update\n---\n";
+        fs::write(source.join("SKILL.md"), updated).unwrap();
+        library.replace_by_storage(&source, record.storage_name.clone(), record.clone()).unwrap();
+        let manual = fs::read_to_string(path.join("SKILL.md")).unwrap();
+        assert!(manual.contains("description: upstream update"));
+        assert!(manual.contains("disable-model-invocation: true"));
+        assert!(manual.contains("opencode/autoinvoke: false"));
+        assert_eq!(library.trigger_mode_by_storage(&record.storage_name), TriggerMode::Manual);
+        assert_eq!(fs::read_to_string(source.join("SKILL.md")).unwrap(), updated);
+        library.set_trigger_mode_by_storage(&record.storage_name, TriggerMode::Automatic).unwrap();
+        let automatic = fs::read_to_string(path.join("SKILL.md")).unwrap();
+        assert!(automatic.contains("description: upstream update"));
+        assert!(!automatic.contains("disable-model-invocation: true"));
         assert_eq!(library.trigger_mode_by_storage(&record.storage_name), TriggerMode::Automatic);
         library.set_trigger_mode_by_storage(&record.storage_name, TriggerMode::FollowSkill).unwrap();
         assert_eq!(fs::read_to_string(path.join("SKILL.md")).unwrap(), updated);
-        assert_eq!(library.registry.package_baselines[&record.storage_name], crate::update_protection::snapshot(&source).unwrap());
+        assert_eq!(library.trigger_mode_by_storage(&record.storage_name), TriggerMode::FollowSkill);
+        assert_eq!(fs::read_to_string(path.join("local-data/keep.txt")).unwrap(), "private fixture");
+        assert_eq!(fs::read_to_string(source.join("SKILL.md")).unwrap(), updated);
     }
 
     #[test]

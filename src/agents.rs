@@ -1053,7 +1053,7 @@ mod tests {
         let names = agents.iter().map(|agent| agent.name).collect::<Vec<_>>();
         assert_eq!(&names[..4], ["Antigravity", "Codex", "Grok", "Proma"]);
         assert_eq!(&names[4..], ["Amp", "Claude Code", "Cursor", "DimAgent", "Droid",
-            "GitHub Copilot", "Hermes", "omp", "OpenClaw", "OpenCode", "Pi", "Trae"]);
+            "GitHub Copilot", "Hermes", "omp", "OpenClaw", "OpenCode", "Pi", "Trae", "WorkBuddy"]);
     }
 
     #[test]
