@@ -707,3 +707,23 @@ mod tests {
         }
     }
 }
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_anchored_reader_rejects_valid_registration_without_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let metadata = temp.path().join("native.json");
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "runnerId":"native", "workingDirectory":temp.path(), "directories":[temp.path()],
+            "servedThreadIds":[], "servedThreadWorkingDirectories":{},
+            "sleepingThreadIds":[], "controlSocketPath":"opaque-not-to-open"
+        })).unwrap();
+        std::fs::write(&metadata, &bytes).unwrap();
+        assert!(projects_at(temp.path()).is_err());
+        assert_eq!(std::fs::read(metadata).unwrap(), bytes);
+        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+    }
+}

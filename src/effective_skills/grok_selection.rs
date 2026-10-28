@@ -244,18 +244,19 @@ pub(super) fn retain(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::fixture_path;
     use serde_json::{Value, json};
 
     fn catalog(cwd: &str, trusted: bool, skills: Value) -> NativeCatalog {
         grok_state::parse_json(&serde_json::to_vec(&json!({
-            "grokVersion":"1.0.50", "cwd":cwd, "projectRoot":null,
+            "grokVersion":"1.0.50", "cwd":fixture_path(cwd), "projectRoot":null,
             "projectTrusted":trusted, "skills":skills,
         })).unwrap()).unwrap()
     }
 
     fn skill(kind: &str, path: &str, name: &str) -> Value {
         json!({"name":name,"description":"fixture metadata",
-            "source":{"type":kind,"path":path},"userInvocable":true})
+            "source":{"type":kind,"path":fixture_path(path)},"userInvocable":true})
     }
 
     fn identity(path: &Path) -> Option<PathBuf> { Some(path.to_path_buf()) }
@@ -266,7 +267,7 @@ mod tests {
         let mut user = skill("user", "/custom-global/same/SKILL.md", "same");
         user["userInvocable"] = json!(false);
         let global = catalog("/home", true, json!([user]));
-        let result = retain(&current, global, Path::new("/home"), true, identity);
+        let result = retain(&current, global, &fixture_path("/home"), true, identity);
         assert!(!result.unknown);
         assert_eq!(result.shadowed.len(), 1);
         assert!(!result.shadowed[0].disabled && !result.shadowed[0].user_invocable);
@@ -280,11 +281,10 @@ mod tests {
             skill("user", "/new/shared/SKILL.md", "same"),
             skill("user", "/new-alias/shared/SKILL.md", "third-name")
         ]));
-        let result = retain(&current, global, Path::new("/home"), true, |path|
-            Some(PathBuf::from(match path.to_str().unwrap() {
-                "/alias/shared/SKILL.md" => "/canonical/shared/SKILL.md",
-                "/new-alias/shared/SKILL.md" => "/new/shared/SKILL.md", other => other,
-            })));
+        let result = retain(&current, global, &fixture_path("/home"), true, |path|
+            Some(if path == fixture_path("/alias/shared/SKILL.md") { fixture_path("/canonical/shared/SKILL.md") }
+                else if path == fixture_path("/new-alias/shared/SKILL.md") { fixture_path("/new/shared/SKILL.md") }
+                else { path.to_path_buf() }));
         assert!(!result.unknown); assert_eq!(result.shadowed.len(), 1);
         assert!(result.metadata_only.is_empty());
     }
@@ -295,15 +295,15 @@ mod tests {
         for case in 0..6 {
             let mut global = catalog("/home", false, json!([skill("user", "/global/same/SKILL.md", "same")]));
             match case {
-                0 => global.project_root = Some(PathBuf::from("/home")),
+                0 => global.project_root = Some(fixture_path("/home")),
                 1 => global.cwd = current.cwd.clone(),
-                2 => global.cwd = PathBuf::from("/wrong"),
+                2 => global.cwd = fixture_path("/wrong"),
                 3 => global.grok_version = "unbound".into(),
                 4 => global.skills.push(catalog("/home", false, json!([
                     skill("project", "/home/local/SKILL.md", "local")])).skills.remove(0)),
                 _ => {}
             }
-            let result = retain(&current, global, Path::new("/home"), case != 5, identity);
+            let result = retain(&current, global, &fixture_path("/home"), case != 5, identity);
             assert!(result.unknown, "case {case}");
             assert!(result.shadowed.is_empty()); assert_eq!(result.metadata_only.len(), 1);
         }
@@ -323,8 +323,8 @@ mod tests {
             }
             let current = catalog("/project", case != 4, json!([winner]));
             let global = catalog("/home", false, json!([user]));
-            let result = retain(&current, global, Path::new("/home"), true, |path|
-                if (case == 5 && path.starts_with("/global")) || (case == 6 && path.starts_with("/project"))
+            let result = retain(&current, global, &fixture_path("/home"), true, |path|
+                if (case == 5 && path.starts_with(fixture_path("/global"))) || (case == 6 && path.starts_with(fixture_path("/project")))
                 { None } else { identity(path) });
             assert!(result.unknown, "case {case}");
             assert!(result.shadowed.is_empty()); assert_eq!(result.metadata_only.len(), 1);
@@ -340,11 +340,11 @@ mod tests {
             skill("bundled", "/bundle/SKILL.md", "bundle"),
             skill("configToml", "/configured/SKILL.md", "configured")
         ]));
-        let result = retain(&current, global, Path::new("/home"), true, identity);
+        let result = retain(&current, global, &fixture_path("/home"), true, identity);
         assert!(result.unknown); assert!(result.shadowed.is_empty());
         assert_eq!(result.metadata_only.len(), 2);
         assert_eq!(result.metadata_only[0].source_type, "future");
-        assert_eq!(result.metadata_only[0].source_path, Some(PathBuf::from("/opaque/SKILL.md")));
+        assert_eq!(result.metadata_only[0].source_path, Some(fixture_path("/opaque/SKILL.md")));
         assert!(result.metadata_only[1].source_path.is_none());
     }
 
@@ -352,7 +352,7 @@ mod tests {
     fn unavailable_projection_is_unknown_and_test_entry_never_starts_native() {
         let result = Retention::unavailable();
         assert!(result.unknown && result.shadowed.is_empty() && result.metadata_only.is_empty());
-        let context = DiscoveryContext { cwd: "/synthetic-project".into(), home: "/synthetic-home".into(), repository_root: None };
+        let context = DiscoveryContext { cwd: fixture_path("/synthetic-project"), home: fixture_path("/synthetic-home"), repository_root: None };
         assert!(read(&context).is_err());
     }
 
@@ -381,7 +381,7 @@ mod tests {
             skill("user", "/global/first/SKILL.md", "same"),
             skill("user", "/global/rekeyed/SKILL.md", "same")
         ]));
-        let result = retain(&current, global, Path::new("/home"), true, identity);
+        let result = retain(&current, global, &fixture_path("/home"), true, identity);
         assert!(result.unknown && result.shadowed.is_empty());
         assert_eq!(result.metadata_only.len(), 2);
         assert_ne!(result.metadata_only[0].source_path, result.metadata_only[1].source_path);
@@ -407,14 +407,14 @@ mod tests {
             manual, global_disabled,
         ]));
         let flags = |path: &Path| Some(Flags {
-            user_invocable: true, disable_model_invocation: path.starts_with("/project/manual"),
+            user_invocable: true, disable_model_invocation: path.starts_with(fixture_path("/project/manual")),
         });
         let baseline = estimate_grok_catalog_with_retention(current.clone(), Retention::default(), flags);
-        let retained = retain(&current, global, Path::new("/home"), true, identity);
+        let retained = retain(&current, global, &fixture_path("/home"), true, identity);
         assert!(!retained.unknown); assert_eq!(retained.shadowed.len(), 3);
         let mut reads = 0;
         let estimate = estimate_grok_catalog_with_retention(current, retained, |path| {
-            assert!(path.starts_with("/project")); reads += 1; flags(path)
+            assert!(path.starts_with(fixture_path("/project"))); reads += 1; flags(path)
         });
         assert_eq!(reads, 3); assert_eq!(estimate.skills.len(), 6);
         assert!(estimate.diagnostic.is_none());
@@ -435,7 +435,7 @@ mod tests {
         ]));
         let mut disabled = skill("user", "/global/shared/SKILL.md", "same");
         disabled["disabled"] = json!(true); disabled["userInvocable"] = json!(false);
-        let result = retain(&current, catalog("/home", true, json!([disabled])), Path::new("/home"), true, identity);
+        let result = retain(&current, catalog("/home", true, json!([disabled])), &fixture_path("/home"), true, identity);
         assert!(result.unknown && result.shadowed.is_empty());
         assert!(result.metadata_only[0].disabled && !result.metadata_only[0].user_invocable);
     }
@@ -447,7 +447,7 @@ mod tests {
             skill("project", "/project/.grok/skills/different-alias-0/SKILL.md", "pleat-shared-header-name"),
             skill("project", "/project/.grok/skills/different-alias-1/SKILL.md", "pleat-shared-header-name")
         ]));
-        let retained = retain(&current, catalog("/home", true, json!([])), Path::new("/home"), true, identity);
+        let retained = retain(&current, catalog("/home", true, json!([])), &fixture_path("/home"), true, identity);
         assert!(!retained.unknown && retained.shadowed.is_empty());
         let estimate = estimate_grok_catalog_with_retention(current, retained, |_| Some(Flags::default()));
         assert_eq!(estimate.skills.len(), 2); assert_eq!(estimate.model_visible_count, 2);
@@ -464,8 +464,8 @@ mod tests {
         let aliases = [".grok", ".agents", ".claude", ".cursor"].iter().enumerate()
             .map(|(index, root)| skill("user", &format!("/home/{root}/skills/different-alias-{index}/SKILL.md"), "same"))
             .collect::<Vec<_>>();
-        let result = retain(&current, catalog("/home", true, json!(aliases)), Path::new("/home"), true,
-            |_| Some(PathBuf::from("/source/one/SKILL.md")));
+        let result = retain(&current, catalog("/home", true, json!(aliases)), &fixture_path("/home"), true,
+            |_| Some(fixture_path("/source/one/SKILL.md")));
         assert!(!result.unknown && result.shadowed.is_empty() && result.metadata_only.is_empty());
     }
 
@@ -476,7 +476,7 @@ mod tests {
         ]));
         let result = retain(&current, catalog("/home", true, json!([
             skill("user", "/global/other/SKILL.md", "same")
-        ])), Path::new("/home"), true, identity);
+        ])), &fixture_path("/home"), true, identity);
         assert!(result.unknown && result.shadowed.is_empty());
         assert_eq!(result.metadata_only.len(), 1);
     }
@@ -496,25 +496,25 @@ mod tests {
             let mut current = catalog(cwd, true, json!([
                 skill("project", &format!("{cwd}/shared/SKILL.md"), "same")
             ]));
-            current.project_root = root.map(PathBuf::from);
+            current.project_root = root.map(fixture_path);
             assert!(current.skills.iter().all(|skill| skill.source.kind == SourceKind::Project));
             for unreadable in [false, true] {
-                let same_settings = project_settings_match(&current, Path::new("/home"),
-                    Path::new("/global/config.toml"), identity, |path| {
-                        if path == Path::new(independent_config) {
+                let same_settings = project_settings_match(&current, &fixture_path("/home"),
+                    &fixture_path("/global/config.toml"), identity, |path| {
+                        if path == fixture_path(independent_config) {
                             if unreadable { ConfigIdentity::Unknown }
                             else { ConfigIdentity::File(path.to_path_buf()) }
-                        } else if path == Path::new("/global/config.toml") {
+                        } else if path == &fixture_path("/global/config.toml") {
                             ConfigIdentity::File(path.to_path_buf())
                         } else { ConfigIdentity::Absent }
                     });
                 assert!(!same_settings);
                 let retained = retain(&current, catalog("/home", true, json!([
                     skill("user", "/global/shared/SKILL.md", "same")
-                ])), Path::new("/home"), same_settings, identity);
+                ])), &fixture_path("/home"), same_settings, identity);
                 assert!(retained.unknown && retained.shadowed.is_empty());
                 assert_eq!(retained.metadata_only.len(), 1);
-                assert_eq!(retained.metadata_only[0].source_path, Some(PathBuf::from("/global/shared/SKILL.md")));
+                assert_eq!(retained.metadata_only[0].source_path, Some(fixture_path("/global/shared/SKILL.md")));
                 let estimate = estimate_grok_catalog_with_retention(current.clone(), retained, |_| Some(Flags::default()));
                 assert_eq!(estimate.skills.len(), 1);
                 let serialized = serde_json::to_value(estimate).unwrap();
@@ -529,46 +529,46 @@ mod tests {
     #[test]
     fn grg1_config_candidates_follow_native_worktree_no_repo_and_home_boundaries() {
         let mut current = catalog("/worktrees/live/sub/work", true, json!([]));
-        let home = Path::new("/home");
+        let home = &fixture_path("/home");
         assert_eq!(project_config_candidates(&current, home, identity).unwrap(),
-            vec![PathBuf::from("/worktrees/live/sub/work/.grok/config.toml")]);
-        current.project_root = Some(PathBuf::from("/worktree-alias"));
+            vec![fixture_path("/worktrees/live/sub/work/.grok/config.toml")]);
+        current.project_root = Some(fixture_path("/worktree-alias"));
         assert_eq!(project_config_candidates(&current, home, |path|
-            if path == Path::new("/worktree-alias") { Some(PathBuf::from("/worktrees/live")) }
+            if path == &fixture_path("/worktree-alias") { Some(fixture_path("/worktrees/live")) }
             else { identity(path) }).unwrap(), [
                 "/worktrees/live/.grok/config.toml", "/worktrees/live/sub/.grok/config.toml",
                 "/worktrees/live/sub/work/.grok/config.toml",
-            ].map(PathBuf::from));
+            ].map(fixture_path));
         // RepoDirChain excludes a canonical HOME git root; no ancestor walk.
-        current.cwd = PathBuf::from("/home/repo/sub");
-        current.project_root = Some(PathBuf::from("/home-alias"));
+        current.cwd = fixture_path("/home/repo/sub");
+        current.project_root = Some(fixture_path("/home-alias"));
         assert_eq!(project_config_candidates(&current, home, |path|
-            if path == Path::new("/home-alias") { Some(home.to_path_buf()) }
+            if path == &fixture_path("/home-alias") { Some(home.to_path_buf()) }
             else { identity(path) }).unwrap().len(), 1);
-        current.cwd = PathBuf::from("/worktrees/live/sub/work");
-        current.project_root = Some(PathBuf::from("/unrelated"));
+        current.cwd = fixture_path("/worktrees/live/sub/work");
+        current.project_root = Some(fixture_path("/unrelated"));
         assert!(project_config_candidates(&current, home, identity).is_none());
-        current.project_root = Some(PathBuf::from("/worktrees/live"));
+        current.project_root = Some(fixture_path("/worktrees/live"));
         assert!(project_config_candidates(&current, home, |path|
-            if path == Path::new("/worktrees/live/sub") { None } else { identity(path) }).is_none());
-        assert!(!project_settings_match(&current, home, Path::new("/global/config.toml"),
+            if path == &fixture_path("/worktrees/live/sub") { None } else { identity(path) }).is_none());
+        assert!(!project_settings_match(&current, home, &fixture_path("/global/config.toml"),
             |_| None, |_| panic!("uncertain boundary must not be treated as absent configs")));
     }
 
     #[test]
     fn grg1_user_config_exact_or_canonical_identity_is_excluded_but_uncertainty_is_not() {
-        let candidate = Path::new("/project/.grok/config.toml");
-        let user = Path::new("/global/config.toml");
+        let candidate = &fixture_path("/project/.grok/config.toml");
+        let user = &fixture_path("/global/config.toml");
         assert!(config_is_global_or_absent(candidate, candidate,
             |_| panic!("exact selected user config is not an independent overlay")));
         assert!(config_is_global_or_absent(candidate, user,
-            |_| ConfigIdentity::File(PathBuf::from("/source/user-config.toml"))));
+            |_| ConfigIdentity::File(fixture_path("/source/user-config.toml"))));
         assert!(config_is_global_or_absent(candidate, user, |_| ConfigIdentity::Absent));
         assert!(!config_is_global_or_absent(candidate, user, |path|
-            if path == candidate { ConfigIdentity::File(PathBuf::from("/independent/config.toml")) }
-            else { ConfigIdentity::File(PathBuf::from("/source/user-config.toml")) }));
+            if path == candidate { ConfigIdentity::File(fixture_path("/independent/config.toml")) }
+            else { ConfigIdentity::File(fixture_path("/source/user-config.toml")) }));
         assert!(!config_is_global_or_absent(candidate, user, |path|
-            if path == candidate { ConfigIdentity::File(PathBuf::from("/source/user-config.toml")) }
+            if path == candidate { ConfigIdentity::File(fixture_path("/source/user-config.toml")) }
             else { ConfigIdentity::Unknown }));
         assert!(!config_is_global_or_absent(candidate, user, |_| ConfigIdentity::Unknown));
     }
@@ -578,33 +578,32 @@ mod tests {
         let mut current = catalog("/worktrees/live/sub", true, json!([
             skill("project", "/worktrees/live/sub/shared/SKILL.md", "same")
         ]));
-        current.project_root = Some(PathBuf::from("/worktrees/live"));
+        current.project_root = Some(fixture_path("/worktrees/live"));
         let mut inspected = Vec::new();
-        let same_settings = project_settings_match(&current, Path::new("/home"),
-            Path::new("/global/config.toml"), identity, |path| {
+        let same_settings = project_settings_match(&current, &fixture_path("/home"),
+            &fixture_path("/global/config.toml"), identity, |path| {
                 inspected.push(path.to_path_buf());
-                match path.to_str().unwrap() {
-                    "/worktrees/live/.grok/config.toml" | "/worktrees/live/sub/.grok/config.toml" => ConfigIdentity::Absent,
-                    _ => panic!("must use native workdir chain, not main checkout, gitdir or outer ancestors"),
-                }
+                if path == fixture_path("/worktrees/live/.grok/config.toml")
+                    || path == fixture_path("/worktrees/live/sub/.grok/config.toml") { ConfigIdentity::Absent }
+                else { panic!("must use native workdir chain, not main checkout, gitdir or outer ancestors") }
             });
         assert!(same_settings); assert_eq!(inspected.len(), 2);
         let global = || catalog("/home", true, json!([
             skill("user", "/global/shared/SKILL.md", "same")
         ]));
-        let result = retain(&current, global(), Path::new("/home"), same_settings, identity);
+        let result = retain(&current, global(), &fixture_path("/home"), same_settings, identity);
         assert!(!result.unknown); assert_eq!(result.shadowed.len(), 1);
         // Once an independent config appears at a later checkpoint, the same
         // two reports no longer establish a priority override.
-        let later_settings = project_settings_match(&current, Path::new("/home"),
-            Path::new("/global/config.toml"), identity,
+        let later_settings = project_settings_match(&current, &fixture_path("/home"),
+            &fixture_path("/global/config.toml"), identity,
             |path| ConfigIdentity::File(path.to_path_buf()));
         assert!(!later_settings);
-        let result = retain(&current, global(), Path::new("/home"), same_settings && later_settings, identity);
+        let result = retain(&current, global(), &fixture_path("/home"), same_settings && later_settings, identity);
         assert!(result.unknown && result.shadowed.is_empty()); assert_eq!(result.metadata_only.len(), 1);
         // Canonical User/Project aliases still do not become a second source.
-        let result = retain(&current, global(), Path::new("/home"), false,
-            |_| Some(PathBuf::from("/source/shared/SKILL.md")));
+        let result = retain(&current, global(), &fixture_path("/home"), false,
+            |_| Some(fixture_path("/source/shared/SKILL.md")));
         assert!(result.shadowed.is_empty() && result.metadata_only.is_empty());
     }
 
@@ -618,7 +617,7 @@ mod tests {
             let retention = if projection_unavailable { Retention::unavailable() } else {
                 retain(&current, catalog("/home", true, json!([
                     skill("user", "/global/other/SKILL.md", "unmatched")
-                ])), Path::new("/home"), true, identity)
+                ])), &fixture_path("/home"), true, identity)
             };
             let estimate = estimate_grok_catalog_with_retention(current, retention, |_| Some(Flags::default()));
             let value = serde_json::to_value(&estimate).unwrap();
@@ -628,7 +627,7 @@ mod tests {
             assert_eq!(estimate.diagnostic.as_ref().unwrap().code, "grok-native-global-projection-unverified");
             if !projection_unavailable {
                 let diagnostic = estimate.diagnostic.as_ref().unwrap();
-                assert_eq!(diagnostic.metadata_only[0].source_path, Some(PathBuf::from("/global/other/SKILL.md")));
+                assert_eq!(diagnostic.metadata_only[0].source_path, Some(fixture_path("/global/other/SKILL.md")));
                 assert_eq!(estimate.skills.len(), 1);
             }
         }

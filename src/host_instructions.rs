@@ -498,6 +498,7 @@ impl ManagedFileRule {
 
     pub(crate) fn install(&mut self) -> Result<bool> {
         self.validate()?;
+        ensure!(cfg!(unix), "此平台尚未支持原生适配受管写入");
         if let Some(installation) = &self.source_installation {
             let (source, _) = self.source_guard.as_ref().context("缺少 Grok Hook 来源绑定")?;
             ensure!(installation.canonicalize().ok().as_ref() == Some(source), "Grok Hook 安装入口与技能源不一致，已保留");
@@ -633,6 +634,20 @@ thread_local! {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn native_file_rule_publication_rejects_without_creating_directories() {
+        use super::*;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let installation = root.join(".claude/skills/probe");
+        let mut rule = ManagedFileRule::for_target(InstallTarget::ClaudeCode, &installation)
+            .unwrap().unwrap();
+        let error = rule.install().unwrap_err().to_string();
+        assert!(error.contains("此平台尚未支持原生适配受管写入"), "{error}");
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+    }
+
     #[cfg(unix)]
     #[test]
     fn copilot_removal_preserves_all_entries_when_unselected_alias_is_redirected() {
@@ -673,6 +688,7 @@ mod tests {
     }
 
     use super::*;
+    #[cfg(unix)]
     #[test]
     fn imports_use_installed_links_and_conflicts_are_preserved() {
         let temp = tempfile::tempdir().unwrap();
@@ -689,6 +705,7 @@ mod tests {
         assert!(RulePlan::for_target(InstallTarget::ClaudeCode, &link).is_err());
         assert_eq!(fs::read_to_string(&plan.path).unwrap(), "user changes");
     }
+    #[cfg(unix)]
     #[test]
     fn uninstall_retains_recovery_outside_rules_and_rejects_swapped_parent() {
         let temp = tempfile::tempdir().unwrap();
@@ -724,6 +741,7 @@ mod tests {
             assert_eq!(fs::read_dir(replacement).unwrap().count(), 0);
         }
     }
+    #[cfg(unix)]
     #[test]
     fn publish_durability_failure_detaches_rule_and_can_retry() {
         let temp = tempfile::tempdir().unwrap(); let root = temp.path().canonicalize().unwrap();

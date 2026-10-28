@@ -103,16 +103,7 @@ mod tests {
         (AgentKind::Antigravity, antigravity_projects_at),
     ];
 
-    fn uri(path: &Path) -> String {
-        format!(
-            "file://{}",
-            path.to_str()
-                .unwrap()
-                .replace('%', "%25")
-                .replace(' ', "%20")
-                .replace('#', "%23")
-        )
-    }
+    fn uri(path: &Path) -> String { super::super::vscode::fixture_file_uri(path) }
 
     // RW SQLite is used only to create our synthetic fixture, never to read
     // source data. The production path delegates to the write-denying VFS.

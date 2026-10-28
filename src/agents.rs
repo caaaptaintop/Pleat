@@ -856,15 +856,22 @@ pub fn target_directory(target: InstallTarget) -> &'static str {
 mod tests {
     use super::*;
 
+    fn fixture_path(relative: &str) -> PathBuf {
+        std::env::temp_dir().join("pleat-agent-fixture").join(relative)
+    }
+
     #[test]
     fn copilot_root_resolver_defaults_normalizes_and_fails_closed() {
-        let home = Path::new("/synthetic/copilot-home");
-        for configured in [None, Some(""), Some("/synthetic/copilot-home/.copilot/./nested/.." )] {
+        let home = &fixture_path("synthetic/copilot-home");
+        let nested = home.join(".copilot/./nested/..");
+        for configured in [None, Some(""), nested.to_str()] {
             assert_eq!(copilot_config_root_from(home, configured).unwrap(), home.join(".copilot"));
         }
-        assert_eq!(copilot_config_root_from(home, Some("/synthetic/other home")).unwrap(),
-            Path::new("/synthetic/other home"));
-        for raw in ["relative", "~", "~/.copilot", " ", " /synthetic/home ", "/synthetic/\0home"] {
+        let other = fixture_path("synthetic/other home");
+        assert_eq!(copilot_config_root_from(home, other.to_str()).unwrap(), other);
+        let padded = format!(" {} ", home.display());
+        let invalid = fixture_path("synthetic/\0home");
+        for raw in ["relative", "~", "~/.copilot", " ", &padded, invalid.to_str().unwrap()] {
             assert!(copilot_config_root_from(home, Some(raw)).is_err());
         }
         assert!(copilot_config_root_from(Path::new("relative-home"), None).is_err());
@@ -872,13 +879,14 @@ mod tests {
 
     #[test]
     fn copilot_relative_selection_requires_verified_absolute_native_origin() {
-        let home = Path::new("/synthetic/home");
+        let home = &fixture_path("synthetic/home");
+        let native = fixture_path("verified/native/profile");
         for raw in ["relative-profile", "~/literal-profile"] {
             let result = copilot_config_selection_with_origin(home, Some(raw), |input| {
                 assert_eq!(input, raw);
-                Ok(PathBuf::from("/verified/native/profile"))
+                Ok(native.clone())
             }).unwrap();
-            assert_eq!(result, (PathBuf::from("/verified/native/profile"), false));
+            assert_eq!(result, (native.clone(), false));
             for result in [Err(anyhow::anyhow!("native unavailable")), Ok(PathBuf::from("relative"))] {
                 assert!(copilot_config_selection_with_origin(home, Some(raw), |_| result).is_err());
             }
@@ -889,8 +897,10 @@ mod tests {
 
     #[test]
     fn copilot_absolute_and_default_selection_never_queries_live_origin() {
-        let home = Path::new("/synthetic/home");
-        for raw in [None, Some(""), Some("/synthetic/home/.copilot"), Some("/other/profile")] {
+        let home = &fixture_path("synthetic/home");
+        let default = home.join(".copilot");
+        let other = fixture_path("other/profile");
+        for raw in [None, Some(""), default.to_str(), other.to_str()] {
             let actual = copilot_config_selection_with_origin(home, raw,
                 |_| panic!("static config reached native origin")).unwrap();
             assert_eq!(actual, copilot_config_selection_from(home, raw).unwrap());
@@ -899,24 +909,26 @@ mod tests {
 
     #[test]
     fn copilot_personal_agents_selection_matches_native_before_output_normalization() {
-        let home = Path::new("/synthetic/copilot-home");
-        for configured in [None, Some(""), Some("/synthetic/copilot-home/.copilot"),
-            Some("/synthetic/copilot-home/.copilot/")] {
+        let home = &fixture_path("synthetic/copilot-home");
+        let default = home.join(".copilot");
+        let trailing = format!("{}{}", default.display(), std::path::MAIN_SEPARATOR);
+        for configured in [None, Some(""), default.to_str(), Some(trailing.as_str())] {
             let (root, personal) = copilot_config_selection_from(home, configured).unwrap();
-            assert_eq!(root, home.join(".copilot"));
+            assert_eq!(root, default);
             assert!(personal);
         }
-        let (root, personal) = copilot_config_selection_from(home,
-            Some("/synthetic/copilot-home/.copilot/../.copilot")).unwrap();
-        assert_eq!(root, home.join(".copilot"));
+        let equivalent = home.join(".copilot/../.copilot");
+        let (root, personal) = copilot_config_selection_from(home, equivalent.to_str()).unwrap();
+        assert_eq!(root, default);
         assert!(!personal);
     }
 
     #[test]
     fn workbuddy_runtime_config_override_trims_and_blank_values_fall_back() {
-        let home = Path::new("/synthetic/workbuddy-home");
-        assert_eq!(workbuddy_config_root_from(home, Some(" \t/synthetic/custom root \n"), None).unwrap(),
-            Path::new("/synthetic/custom root"));
+        let home = &fixture_path("synthetic/workbuddy-home");
+        let custom = fixture_path("synthetic/custom root");
+        assert_eq!(workbuddy_config_root_from(home, Some(&format!(" \t{} \n", custom.display())), None).unwrap(),
+            custom);
         for configured in [None, Some(""), Some("  \t\n")] {
             assert_eq!(workbuddy_config_root_from(home, configured, None).unwrap(), home.join(".workbuddy"));
             assert_eq!(workbuddy_config_root_from(home, configured, Some(" 2 ")).unwrap(), home.join(".workbuddy-2"));
@@ -926,47 +938,51 @@ mod tests {
 
     #[test]
     fn workbuddy_desktop_database_root_uses_official_precedence_without_fallback() {
-        let home = Path::new("/synthetic/workbuddy-home");
-        assert_eq!(workbuddy_desktop_database_root_from(home, Some(" /synthetic/wb "),
-            Some("relative-ignored")).unwrap(), Path::new("/synthetic/wb"));
+        let home = &fixture_path("synthetic/workbuddy-home");
+        let wb = fixture_path("synthetic/wb");
+        let codebuddy = fixture_path("synthetic/codebuddy root");
+        let lower = fixture_path("synthetic/valid-lower-priority");
+        assert_eq!(workbuddy_desktop_database_root_from(home, Some(&format!(" {} ", wb.display())),
+            Some("relative-ignored")).unwrap(), wb);
         assert_eq!(workbuddy_desktop_database_root_from(home, Some(" \t\n"),
-            Some(" /synthetic/codebuddy root/ ")).unwrap(),
-            Path::new("/synthetic/codebuddy root/"));
-        for invalid in ["relative", "~/.workbuddy", "/synthetic/\0root"] {
+            Some(&format!(" {}{} ", codebuddy.display(), std::path::MAIN_SEPARATOR))).unwrap(), codebuddy);
+        let invalid_root = fixture_path("synthetic/\0root");
+        for invalid in ["relative", "~/.workbuddy", invalid_root.to_str().unwrap()] {
             assert!(workbuddy_desktop_database_root_from(home, Some(invalid),
-                Some("/synthetic/valid-lower-priority")).is_err());
+                lower.to_str()).is_err());
             assert!(workbuddy_desktop_database_root_from(home, None, Some(invalid)).is_err());
         }
     }
 
     #[test]
     fn workbuddy_desktop_database_root_matches_ecmascript_blank_handling() {
-        let home = Path::new("/synthetic/workbuddy-home");
+        let home = &fixture_path("synthetic/workbuddy-home");
+        let wb = fixture_path("synthetic/wb");
         for blank in [None, Some(""), Some(" \t\n\r"), Some("\u{FEFF}\u{00A0}\u{2028}\u{2029}")] {
             assert_eq!(workbuddy_desktop_database_root_from(home, blank, blank).unwrap(),
                 home.join(".workbuddy"));
         }
         assert_eq!(workbuddy_desktop_database_root_from(home,
-            Some("\u{FEFF}/synthetic/wb\u{FEFF}"), None).unwrap(), Path::new("/synthetic/wb"));
+            Some(&format!("\u{FEFF}{}\u{FEFF}", wb.display())), None).unwrap(), wb);
         assert!(workbuddy_desktop_database_root_from(home, Some("\u{0085}"), None).is_err());
-        assert_eq!(workbuddy_desktop_database_root_from(home, Some("/synthetic/wb\u{0085}"),
-            None).unwrap(), Path::new("/synthetic/wb\u{0085}"));
+        let nonblank = fixture_path("synthetic/wb\u{0085}");
+        assert_eq!(workbuddy_desktop_database_root_from(home, nonblank.to_str(), None).unwrap(), nonblank);
     }
 
     #[test]
     fn workbuddy_desktop_database_root_keeps_default_independent_of_personal_instances() {
-        let home = Path::new("/synthetic/workbuddy-home");
+        let home = &fixture_path("synthetic/workbuddy-home");
+        let wb = fixture_path("synthetic/wb");
         for instance in ["2", "stage-2"] {
             let personal = workbuddy_config_root_from(home, None, Some(instance)).unwrap();
             assert_ne!(personal, home.join(".workbuddy"));
             assert_eq!(workbuddy_desktop_database_root_from(home, None, None).unwrap(),
                 home.join(".workbuddy"));
         }
-        for home in [Path::new("relative-home"), Path::new("/synthetic/\0home")] {
+        for home in [Path::new("relative-home"), &fixture_path("synthetic/\0home")] {
             assert!(workbuddy_desktop_database_root_from(home, None, None).is_err());
             // An explicit absolute root does not depend on the unused HOME.
-            assert_eq!(workbuddy_desktop_database_root_from(home, Some("/synthetic/wb"),
-                None).unwrap(), Path::new("/synthetic/wb"));
+            assert_eq!(workbuddy_desktop_database_root_from(home, wb.to_str(), None).unwrap(), wb);
         }
         assert_eq!(workbuddy_config_root_from(home, None, Some("2")).unwrap(),
             home.join(".workbuddy-2"));

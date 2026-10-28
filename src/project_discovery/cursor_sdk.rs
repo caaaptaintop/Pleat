@@ -464,3 +464,21 @@ mod tests {
         assert_fixed_error(projects_at(&fixture.store.join("..")));
     }
 }
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_anchored_reader_rejects_valid_metadata_without_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let metadata = temp.path().join("agents.ndjson");
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "agentId":"native", "cwd":temp.path(), "status":"idle"
+        })).unwrap();
+        fs::write(&metadata, &bytes).unwrap();
+        assert!(projects_at(temp.path()).is_err());
+        assert_eq!(fs::read(metadata).unwrap(), bytes);
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+    }
+}

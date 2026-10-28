@@ -113,6 +113,10 @@ pub fn install_from_path(
             project, &installation_root(project, *target)?.join(name), source)?);
     }
     let instructions = crate::host_instructions::RulePlan::merge_all(instructions)?;
+    // Native instruction publication requires the Unix anchored transaction.
+    // Reject before creating installation links on unsupported platforms.
+    #[cfg(not(unix))]
+    ensure!(instructions.is_empty(), "此平台尚未支持原生适配受管写入，未创建安装链接");
     if let Some((expected, git_root)) = hermes_root {
         anyhow::ensure!(crate::agents::validate_hermes_project(project)? == expected
             && crate::agents::hermes_project_root(project, &dirs::home_dir().context("无法取得 Hermes 用户目录")?)? == git_root,
@@ -230,7 +234,10 @@ fn install_to_roots(
                 #[cfg(windows)]
                 directory_link::DirectoryLinkKind::Junction => fs::read_link(&path).ok(),
             };
-            ensure!(expected.target == source
+            // Compare only DOS/verbatim spelling. Resolving the stored target
+            // would lose migration aliases needed by rollback and recovery.
+            ensure!(crate::library::storage::storage_path_spelling(&expected.target)
+                    == crate::library::storage::storage_path_spelling(&source)
                 && (expected.kind != directory_link::DirectoryLinkKind::SymbolicLink || raw_target.as_ref() == Some(&source))
                 && crate::library::filesystem_identity(&path)? == identity,
                 "刚创建的安装链接身份或目标已变化，已保留");
@@ -719,6 +726,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn batch_install_covers_selected_projects_and_supported_agents() {
         let fixture = Fixture::new();
@@ -757,6 +765,7 @@ mod tests {
         assert_eq!(fs::read_to_string(fixture.source.join("SKILL.md")).unwrap(), "# Example");
     }
 
+    #[cfg(unix)]
     #[test]
     fn batch_install_reports_conflict_without_overwriting_it() {
         let fixture = Fixture::new();
@@ -832,6 +841,41 @@ mod tests {
         assert!(fixture.source.join("SKILL.md").is_file());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn unsupported_native_writes_reject_before_creating_links_or_changing_sources() {
+        let fixture = Fixture::new();
+        for target in [InstallTarget::Universal, InstallTarget::ClaudeCode, InstallTarget::Cursor,
+            InstallTarget::Pi, InstallTarget::Omp, InstallTarget::Grok,
+            InstallTarget::Antigravity, InstallTarget::Droid, InstallTarget::Copilot,
+            InstallTarget::Trae, InstallTarget::WorkBuddy] {
+            let error = install_from_path(&fixture.project, &fixture.source, "example", &[target])
+                .unwrap_err().to_string();
+            assert!(error.contains("此平台尚未支持原生适配受管写入"), "{target:?}: {error}");
+            assert_eq!(fs::read_dir(&fixture.project).unwrap().count(), 0, "{target:?}");
+            assert_eq!(fs::read(fixture.source.join("SKILL.md")).unwrap(), b"# Example");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_plain_link_installation_and_mixed_batch_keep_exact_results() {
+        let fixture = Fixture::new();
+        let report = install_batch(&[fixture.project.clone()],
+            &[("example".into(), fixture.source.clone())],
+            &[InstallTarget::Codex, InstallTarget::ClaudeCode]);
+        assert_eq!(report.installed, 1, "{:?}", report.failures);
+        assert_eq!(report.failures.len(), 1);
+        assert!(report.failures[0].contains("此平台尚未支持原生适配受管写入"));
+        assert!(!fixture.project.join(".claude").exists());
+        let link = fixture.installation(InstallTarget::Codex);
+        assert_eq!(link.canonicalize().unwrap(), fixture.source.canonicalize().unwrap());
+        install_from_path(&fixture.project, &fixture.source, "example", &[InstallTarget::Codex]).unwrap();
+        uninstall(&fixture.project, &fixture.library, "example", &[InstallTarget::Codex]).unwrap();
+        assert!(link.symlink_metadata().is_err());
+        assert_eq!(fs::read(fixture.source.join("SKILL.md")).unwrap(), b"# Example");
+    }
+
     #[test]
     fn global_installation_copilot_override_cannot_escape_fixture() {
         let temp = tempfile::tempdir().unwrap();
@@ -881,6 +925,7 @@ mod tests {
         assert_eq!(fs::read(fixture.source.join("local-data/ADAPTATION.md")).unwrap(), b"KEEP_LOCAL");
     }
 
+    #[cfg(unix)]
     #[test]
     fn installs_idempotently_and_uninstalls_without_touching_the_source() {
         let fixture = Fixture::new();
@@ -908,6 +953,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn direct_instruction_failure_preserves_replaced_link_and_original() {
         // A second link to the same source must also fail the ownership check.
@@ -959,6 +1005,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn direct_instruction_failure_detaches_only_created_link_for_recovery() {
         let fixture = Fixture::new();
@@ -990,6 +1037,7 @@ mod tests {
         assert_eq!(fs::read_to_string(fixture.source.join("SKILL.md")).unwrap(), "# Example");
     }
 
+    #[cfg(unix)]
     #[test]
     fn direct_instruction_failure_preserves_replaced_project() {
         let fixture = Fixture::new();
@@ -1300,6 +1348,7 @@ mod tests {
         assert_eq!(fs::read(source.join("local-data/ADAPTATION.md")).unwrap(), b"GLOBAL_LOCAL");
     }
 
+    #[cfg(unix)]
     #[test]
     fn lists_and_removes_every_supported_project_install_target() {
         let fixture = Fixture::new();
@@ -1335,6 +1384,7 @@ mod tests {
         fs::create_dir_all(&occupied).unwrap();
         fs::write(occupied.join("keep"), "user data").unwrap();
 
+        #[cfg(unix)]
         let error = install(
             &fixture.project,
             &fixture.library,
@@ -1342,6 +1392,12 @@ mod tests {
             &[InstallTarget::Universal, InstallTarget::ClaudeCode],
         )
         .unwrap_err();
+        // The public native-write path is unsupported on Windows. Exercise
+        // the same link preflight with two plain directory-link roots.
+        #[cfg(windows)]
+        let error = install_to_roots(&fixture.project, &fixture.source, "example",
+            [fixture.project.join(target_directory(InstallTarget::Universal)),
+             fixture.project.join(target_directory(InstallTarget::ClaudeCode))]).err().unwrap();
 
         assert!(error.to_string().contains("安装位置已被占用"));
         assert!(
@@ -1378,6 +1434,7 @@ mod tests {
         assert_eq!(link.canonicalize().unwrap(), other.canonicalize().unwrap());
     }
 
+    #[cfg(unix)]
     #[test]
     fn refuses_to_uninstall_when_the_managed_source_is_missing() {
         let fixture = Fixture::new();

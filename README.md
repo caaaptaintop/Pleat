@@ -162,7 +162,7 @@ kitter library --set /absolute/path/to/existing/library
 | --- | --- |
 | macOS ARM64 | Desktop app, CLI, packaging and isolated demo operations verified locally. |
 | macOS Intel | Core tests and desktop compilation checked in CI. |
-| Windows x64 | Core tests and desktop compilation checked in CI. |
+| Windows x64 | Partial basic functionality only; managed native adaptation writes are unsupported. Not a verified release platform. |
 | Linux x64 | Core tests and desktop compilation checked in CI. |
 
 The native desktop experience still needs testing on Windows, Linux and Intel Mac. See [GitHub Actions](https://github.com/caaaptaintop/Pleat/actions) for checks on a specific commit.

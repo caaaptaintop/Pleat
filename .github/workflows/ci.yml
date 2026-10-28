@@ -39,6 +39,6 @@ jobs:
             exit 1
           fi
       - name: Test core and directory-link behavior
-        run: cargo test --locked
+        run: cargo test --locked --no-fail-fast
       - name: Check desktop app
         run: cargo check --locked --features desktop --bin kitter-desktop

@@ -192,6 +192,10 @@ fn isolated(name: &str, run: impl FnOnce(&Fixture)) {
         ] {
             command.env_remove(key);
         }
+        // Windows dirs::home_dir uses the OS Known Folder, not USERPROFILE.
+        // Keep native OpenClaw reads inside the fixture with its own override.
+        #[cfg(windows)]
+        command.env("OPENCLAW_HOME", &home);
         if name == "openclaw_profile_keeps_global_root_separate" {
             command
                 .env_remove("OPENCLAW_STATE_DIR")
@@ -206,7 +210,7 @@ fn isolated(name: &str, run: impl FnOnce(&Fixture)) {
         }
         if name.starts_with("openclaw_review_home_") {
             command
-                .env("OPENCLAW_HOME", "~/relocated")
+                .env("OPENCLAW_HOME", if cfg!(windows) { home.join("relocated").into_os_string() } else { "~/relocated".into() })
                 .env_remove("OPENCLAW_STATE_DIR")
                 .env_remove("OPENCLAW_CONFIG_PATH");
             if name.ends_with("profile") {
@@ -234,6 +238,8 @@ fn isolated(name: &str, run: impl FnOnce(&Fixture)) {
     run(&fixture);
 }
 
+// Requires native adaptation publication or an accepted native-write preview.
+#[cfg(unix)]
 #[test]
 fn openclaw_profile_plugin_scope_and_last_uninstall_preserve_source_data() {
     isolated("openclaw_profile_plugin_scope_and_last_uninstall_preserve_source_data", |f| {
@@ -317,6 +323,8 @@ fn use_recorded_desktop_json_order(plugin: &Path) {
     fs::write(plugin.join("package.json"), fixture["package"].as_str().unwrap()).unwrap();
 }
 
+// Requires native adaptation publication or an accepted native-write preview.
+#[cfg(unix)]
 #[test]
 fn openclaw_profile_legacy_desktop_order_preserves_other_records_on_uninstall() {
     isolated("openclaw_profile_legacy_desktop_order_preserves_other_records_on_uninstall", |f| {
@@ -344,6 +352,8 @@ fn openclaw_profile_legacy_desktop_order_preserves_other_records_on_uninstall() 
     });
 }
 
+// Requires native adaptation publication or an accepted native-write preview.
+#[cfg(unix)]
 #[test]
 fn openclaw_profile_unknown_json_encoding_is_preserved_with_installation() {
     isolated("openclaw_profile_unknown_json_encoding_is_preserved_with_installation", |f| {
@@ -364,6 +374,8 @@ fn openclaw_profile_unknown_json_encoding_is_preserved_with_installation() {
     });
 }
 
+// Requires native adaptation publication or an accepted native-write preview.
+#[cfg(unix)]
 #[test]
 fn openclaw_profile_plugin_preview_cas_keeps_concurrent_config_and_source() {
     isolated("openclaw_profile_plugin_preview_cas_keeps_concurrent_config_and_source", |f| {
@@ -403,6 +415,8 @@ fn openclaw_workspace_env_is_only_a_default() {
     });
 }
 
+// Requires native adaptation publication or an accepted native-write preview.
+#[cfg(unix)]
 #[test]
 fn openclaw_native_binding_change_rejects_previewed_install() {
     isolated(
@@ -437,6 +451,8 @@ fn openclaw_native_binding_change_rejects_previewed_install() {
     );
 }
 
+// Requires native adaptation publication or an accepted native-write preview.
+#[cfg(unix)]
 #[test]
 fn openclaw_shared_path_agent_selections_make_one_physical_link() {
     isolated(
@@ -603,6 +619,8 @@ fn openclaw_native_defaults_and_include_keep_agent_ids() {
     });
 }
 
+// Requires native adaptation publication or an accepted native-write preview.
+#[cfg(unix)]
 #[test]
 fn openclaw_multiple_workspace_selection_uses_common_link_lifecycle() {
     isolated(
@@ -681,6 +699,23 @@ fn openclaw_multiple_workspace_selection_uses_common_link_lifecycle() {
     );
 }
 
+#[cfg(windows)]
+fn assert_native_write_refused(f: &Fixture, root: &Path, source: &Path, name: &str) {
+    let config = fs::read(&f.config).unwrap();
+    let body = fs::read(source.join("SKILL.md")).unwrap();
+    let local = fs::read(f.source.join("local-data/keep")).unwrap();
+    let target = agents::installation_root(root, InstallTarget::OpenClaw).unwrap().join(name);
+    let error = project::install_from_path(root, source, name, &[InstallTarget::OpenClaw]).unwrap_err();
+    let message = format!("{error:#}");
+    assert!(["此平台尚未支持原生适配受管写入", "此平台尚未核验原生配置 ACL"]
+        .iter().any(|reason| message.contains(reason)), "{message}");
+    assert!(target.symlink_metadata().is_err());
+    assert!(!f.state.join("extensions/pleat-openclaw-adaptation").exists());
+    assert_eq!(fs::read(&f.config).unwrap(), config);
+    assert_eq!(fs::read(source.join("SKILL.md")).unwrap(), body);
+    assert_eq!(fs::read(f.source.join("local-data/keep")).unwrap(), local);
+}
+
 #[test]
 fn openclaw_trust_shape_default_and_real_target_are_enforced() {
     isolated(
@@ -731,23 +766,27 @@ fn openclaw_trust_shape_default_and_real_target_are_enforced() {
             }
             // The array resolves aliases and admits only descendants of its real target.
             f.configure(json!([alias]));
-            project::install_from_path(
-                &f.workspace,
-                &f.source,
-                "probe",
-                &[InstallTarget::OpenClaw],
-            )
-            .unwrap();
-            assert_eq!(target.canonicalize().unwrap(), f.source);
-            assert!(
+            #[cfg(unix)]
+            {
                 project::install_from_path(
                     &f.workspace,
-                    &sibling,
-                    "sibling",
-                    &[InstallTarget::OpenClaw]
+                    &f.source,
+                    "probe",
+                    &[InstallTarget::OpenClaw],
                 )
-                .is_err()
-            );
+                .unwrap();
+                assert_eq!(target.canonicalize().unwrap(), f.source);
+            }
+            #[cfg(windows)]
+            assert_native_write_refused(f, &f.workspace, &f.source, "probe");
+            let denied = project::install_from_path(
+                &f.workspace,
+                &sibling,
+                "sibling",
+                &[InstallTarget::OpenClaw],
+            ).unwrap_err();
+            assert!(format!("{denied:#}").contains("allowSymlinkTargets"), "{denied:#}");
+            #[cfg(unix)]
             project::uninstall(
                 &f.workspace,
                 &f.root.join("library"),
@@ -759,18 +798,25 @@ fn openclaw_trust_shape_default_and_real_target_are_enforced() {
             let contained = f.workspace.join("skills/.source/probe");
             write_skill(&contained, "probe", "contained");
             f.configure(json!([]));
-            project::install_from_path(
-                &f.workspace,
-                &contained,
-                "probe",
-                &[InstallTarget::OpenClaw],
-            )
-            .unwrap();
-            assert_eq!(target.canonicalize().unwrap(), contained);
+            #[cfg(unix)]
+            {
+                project::install_from_path(
+                    &f.workspace,
+                    &contained,
+                    "probe",
+                    &[InstallTarget::OpenClaw],
+                )
+                .unwrap();
+                assert_eq!(target.canonicalize().unwrap(), contained);
+            }
+            #[cfg(windows)]
+            assert_native_write_refused(f, &f.workspace, &contained, "probe");
         },
     );
 }
 
+// Requires native adaptation publication or an accepted native-write preview.
+#[cfg(unix)]
 #[test]
 fn openclaw_revoked_trust_rejects_previewed_install() {
     isolated("openclaw_revoked_trust_rejects_previewed_install", |f| {
@@ -918,9 +964,20 @@ fn openclaw_global_root_allows_links_and_conflicts_keep_user_files() {
                 agents::global_target_root(&f.home, InstallTarget::OpenClaw).unwrap(),
                 f.state.join("skills")
             );
-            project::install_from_path(&f.home, &f.source, "probe", &[InstallTarget::OpenClaw])
-                .unwrap();
-            assert!(f.visible(&f.home).iter().any(|s| s.name == "probe"));
+            #[cfg(unix)]
+            {
+                project::install_from_path(&f.home, &f.source, "probe", &[InstallTarget::OpenClaw])
+                    .unwrap();
+                assert!(f.visible(&f.home).iter().any(|s| s.name == "probe"));
+            }
+            #[cfg(windows)]
+            {
+                // The fixture cannot replace Windows' OS-global home. Keep
+                // the root mapping above and check writes in a trusted scope.
+                f.configure(json!([f.source]));
+                assert_native_write_refused(f, &f.workspace, &f.source, "probe");
+                assert!(f.state.join("skills/probe").symlink_metadata().is_err());
+            }
             f.configure(json!([f.source]));
             let occupied = f.workspace.join("skills/probe");
             write_skill(&occupied, "user-owned", "keep");
@@ -938,6 +995,7 @@ fn openclaw_global_root_allows_links_and_conflicts_keep_user_files() {
                     .unwrap()
                     .contains("user-owned")
             );
+            #[cfg(unix)]
             project::uninstall(
                 &f.home,
                 &f.root.join("library"),
@@ -966,12 +1024,21 @@ fn openclaw_profile_keeps_global_root_separate() {
         write_skill(&f.state.join("skills/profile"), "profile", "profile state");
         assert!(!f.visible(&f.workspace).iter().any(|s| s.name == "personal"));
         assert!(f.visible(&f.workspace).iter().any(|s| s.name == "profile"));
-        project::install_from_path(&f.home, &f.source, "probe", &[InstallTarget::OpenClaw])
-            .unwrap();
-        assert_eq!(
-            f.state.join("skills/probe").canonicalize().unwrap(),
-            f.source
-        );
+        #[cfg(unix)]
+        {
+            project::install_from_path(&f.home, &f.source, "probe", &[InstallTarget::OpenClaw])
+                .unwrap();
+            assert_eq!(
+                f.state.join("skills/probe").canonicalize().unwrap(),
+                f.source
+            );
+        }
+        #[cfg(windows)]
+        {
+            f.configure(json!([f.source]));
+            assert_native_write_refused(f, &f.workspace, &f.source, "probe");
+            assert!(f.state.join("skills/probe").symlink_metadata().is_err());
+        }
         assert!(
             f.home
                 .join(".openclaw/skills/probe")
@@ -1008,7 +1075,13 @@ fn relocated_home_contract(name: &str) {
             json!({"agents":{"entries":{"reviewer":{"workspace":"~/workspace"}}},
             "skills":{"load":{"allowSymlinkTargets":["~/trusted"],"extraDirs":["~/extra"]}}}),
         );
+        let source_before = fs::read(f.source.join("SKILL.md")).unwrap();
+        let local_before = fs::read(f.source.join("local-data/keep")).unwrap();
+        #[cfg(windows)]
+        let config_before = fs::read(&f.config).unwrap();
         let projects = f.projects();
+        assert_eq!(projects.len(), 1, "relocated-home discovery failed: config={:?}, diagnostic={:?}",
+            f.config, f.estimate(&native_workspace).diagnostic);
         assert_eq!(projects[0].path, native_workspace);
         assert_eq!(
             projects[0].native_workspaces[0].source_id.as_deref(),
@@ -1018,6 +1091,7 @@ fn relocated_home_contract(name: &str) {
             agents::global_target_root(&f.home, InstallTarget::OpenClaw).unwrap(),
             f.state.join("skills")
         );
+        #[cfg(unix)]
         project::install_from_path(
             &native_workspace,
             &right,
@@ -1025,15 +1099,21 @@ fn relocated_home_contract(name: &str) {
             &[InstallTarget::OpenClaw],
         )
         .unwrap();
-        assert!(
-            project::install_from_path(
-                &native_workspace,
-                &wrong,
-                "wrong",
-                &[InstallTarget::OpenClaw]
-            )
-            .is_err()
-        );
+        #[cfg(windows)]
+        {
+            assert_native_write_refused(f, &native_workspace, &right, "right");
+            // This explicit fixture link tests read-only trust/discovery under
+            // relocated HOME; it is not a successful managed installation.
+            fs::create_dir_all(native_workspace.join("skills")).unwrap();
+            directory_link::create(&right, &native_workspace.join("skills/right")).unwrap();
+        }
+        let denied = project::install_from_path(
+            &native_workspace,
+            &wrong,
+            "wrong",
+            &[InstallTarget::OpenClaw],
+        ).unwrap_err();
+        assert!(format!("{denied:#}").contains("allowSymlinkTargets"), "{denied:#}");
         let visible = f.visible(&native_workspace);
         assert!(visible.iter().any(|s| s.name == "right"));
         assert!(visible.iter().any(|s| s.name == "home-extra"));
@@ -1047,18 +1127,31 @@ fn relocated_home_contract(name: &str) {
             visible.iter().any(|s| s.name == "os-personal"),
             default_state
         );
-        project::install_from_path(&f.home, &f.source, "probe", &[InstallTarget::OpenClaw])
-            .unwrap();
-        assert_eq!(
-            f.state.join("skills/probe").canonicalize().unwrap(),
-            f.source
-        );
+        #[cfg(unix)]
+        {
+            project::install_from_path(&f.home, &f.source, "probe", &[InstallTarget::OpenClaw])
+                .unwrap();
+            assert_eq!(
+                f.state.join("skills/probe").canonicalize().unwrap(),
+                f.source
+            );
+        }
+        #[cfg(windows)]
+        {
+            // HOME/USERPROFILE cannot impersonate the Windows Known Folder.
+            // Keep the pure global-root mapping above and exercise managed
+            // write refusal in the explicitly trusted fixture workspace.
+            assert_native_write_refused(f, &native_workspace, &right, "probe");
+            assert!(f.state.join("skills/probe").symlink_metadata().is_err());
+            assert_eq!(fs::read(&f.config).unwrap(), config_before);
+        }
         assert!(
             f.home
                 .join(".openclaw/skills/probe")
                 .symlink_metadata()
                 .is_err()
         );
+        #[cfg(unix)]
         project::uninstall(
             &f.home,
             &f.root.join("library"),
@@ -1066,7 +1159,8 @@ fn relocated_home_contract(name: &str) {
             &[InstallTarget::OpenClaw],
         )
         .unwrap();
-        assert!(f.source.join("SKILL.md").is_file());
+        assert_eq!(fs::read(f.source.join("SKILL.md")).unwrap(), source_before);
+        assert_eq!(fs::read(f.source.join("local-data/keep")).unwrap(), local_before);
     });
 }
 
@@ -1136,22 +1230,27 @@ fn openclaw_review_plain_skills_do_not_create_native_association() {
                     .iter()
                     .any(|a| a.id == "openclaw")
             );
+            #[cfg(windows)]
+            assert_native_write_refused(f, &ordinary, &f.source, "probe");
             // Explicit OpenClaw operations/view remain possible without inventing native registration.
-            project::install_from_path(&ordinary, &f.source, "probe", &[InstallTarget::OpenClaw])
+            #[cfg(unix)]
+            {
+                project::install_from_path(&ordinary, &f.source, "probe", &[InstallTarget::OpenClaw])
+                    .unwrap();
+                assert_eq!(
+                    ordinary.join("skills/probe").canonicalize().unwrap(),
+                    f.source
+                );
+                assert!(f.visible(&ordinary).iter().any(|s| s.name == "probe"));
+                project::uninstall(
+                    &ordinary,
+                    &f.root.join("library"),
+                    "probe",
+                    &[InstallTarget::OpenClaw],
+                )
                 .unwrap();
-            assert_eq!(
-                ordinary.join("skills/probe").canonicalize().unwrap(),
-                f.source
-            );
-            assert!(f.visible(&ordinary).iter().any(|s| s.name == "probe"));
-            project::uninstall(
-                &ordinary,
-                &f.root.join("library"),
-                "probe",
-                &[InstallTarget::OpenClaw],
-            )
-            .unwrap();
-            assert!(f.source.join("SKILL.md").is_file());
+                assert!(f.source.join("SKILL.md").is_file());
+            }
         },
     );
 }

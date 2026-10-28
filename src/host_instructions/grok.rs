@@ -168,6 +168,7 @@ mod tests {
     use super::*;
     use std::fs;
 
+    #[cfg(unix)]
     #[test]
     fn project_and_custom_user_rules_keep_source_and_unmanaged_files() {
         let temp = tempfile::tempdir().unwrap();
@@ -197,6 +198,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn same_name_source_identity_and_conflict_protection_are_preserved() {
         let temp = tempfile::tempdir().unwrap();

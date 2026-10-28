@@ -124,10 +124,8 @@ impl UriComponents {
     fn local_path(self) -> Result<Option<PathBuf>> {
         check_path(&self.path)?;
         // URI.toJSON stores the already-decoded path. Never decode it twice.
-        Ok((self.scheme == "file"
-            && self.authority.is_empty()
-            && Path::new(&self.path).is_absolute())
-        .then(|| PathBuf::from(self.path)))
+        if self.scheme != "file" || !self.authority.is_empty() { return Ok(None); }
+        Ok(local_uri_path(&self.path))
     }
 }
 
@@ -309,12 +307,12 @@ fn read_budgeted(path: &Path, remaining: &mut usize) -> Result<Vec<u8>> {
 }
 
 fn read_bounded(path: &Path) -> Result<Vec<u8>> {
-    let before = fs::symlink_metadata(path).map_err(|_| anyhow!("Cursor 项目元数据暂不可读"))?;
+    let before = open_metadata_file(path)?;
     read_bounded_file(path, &before)
 }
 
-fn read_bounded_file(path: &Path, before: &Metadata) -> Result<Vec<u8>> {
-    if !before.is_file() {
+fn open_metadata_file(path: &Path) -> Result<fs::File> {
+    if !fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file()) {
         bail!("Cursor 项目元数据不是文件");
     }
     let mut options = OpenOptions::new();
@@ -330,19 +328,32 @@ fn read_bounded_file(path: &Path, before: &Metadata) -> Result<Vec<u8>> {
         // FILE_FLAG_OPEN_REPARSE_POINT: open the leaf itself, not its target.
         options.custom_flags(0x0020_0000);
     }
-    let mut file = options
+    options
         .open(path)
-        .map_err(|_| anyhow!("Cursor 项目元数据暂不可读"))?;
+        .map_err(|_| anyhow!("Cursor 项目元数据暂不可读"))
+}
+
+fn read_bounded_file(path: &Path, before: &fs::File) -> Result<Vec<u8>> {
+    let before_metadata = before.metadata().map_err(|_| anyhow!("Cursor 项目元数据暂不可读"))?;
+    let mut file = open_metadata_file(path)?;
     let opened = file
         .metadata()
         .map_err(|_| anyhow!("Cursor 项目元数据暂不可读"))?;
     let current = fs::symlink_metadata(path).map_err(|_| anyhow!("Cursor 项目元数据暂不可读"))?;
     if !opened.is_file()
         || !current.is_file()
-        || !same_metadata_file(before, &opened)
+        || !same_metadata_file(&before_metadata, &opened)
         || !same_metadata_file(&opened, &current)
     {
         bail!("Cursor 项目元数据文件已变化");
+    }
+    #[cfg(windows)]
+    {
+        use crate::library::storage::{identity, windows_file_identity};
+        let expected = windows_file_identity(before)?;
+        if windows_file_identity(&file)? != expected || identity(path)? != expected {
+            bail!("Cursor 项目元数据文件已变化");
+        }
     }
     if opened.len() > MAX_BYTES as u64 {
         bail!("Cursor 项目元数据超过读取上限");
@@ -357,6 +368,10 @@ fn read_bounded_file(path: &Path, before: &Metadata) -> Result<Vec<u8>> {
     }
     let after = fs::symlink_metadata(path).map_err(|_| anyhow!("Cursor 项目元数据暂不可读"))?;
     if !after.is_file() || !same_metadata_file(&opened, &after) {
+        bail!("Cursor 项目元数据文件已变化");
+    }
+    #[cfg(windows)]
+    if crate::library::storage::windows_file_identity(&file)? != crate::library::filesystem_identity(path)? {
         bail!("Cursor 项目元数据文件已变化");
     }
     Ok(bytes)
@@ -516,6 +531,7 @@ fn local_file_uri(raw: &str) -> Result<Option<PathBuf>> {
         if input[index] == b'%' {
             let hex = input
                 .get(index + 1..index + 3)
+                .filter(|v| v.iter().all(u8::is_ascii_hexdigit))
                 .and_then(|v| std::str::from_utf8(v).ok());
             let value = hex
                 .and_then(|v| u8::from_str_radix(v, 16).ok())
@@ -529,7 +545,39 @@ fn local_file_uri(raw: &str) -> Result<Option<PathBuf>> {
     }
     let path = String::from_utf8(bytes).map_err(|_| anyhow!("Cursor 文件 URI 编码无效"))?;
     check_path(&path)?;
-    Ok(Path::new(&path).is_absolute().then(|| PathBuf::from(path)))
+    Ok(local_uri_path(&path))
+}
+
+/// URI.path is already decoded; only a local absolute filesystem path is valid.
+/// VSCode uriToFsPath removes the slash before a Windows drive letter. Reject
+/// authority-shaped paths here too, including encoded slashes/backslashes.
+fn local_uri_path(path: &str) -> Option<PathBuf> {
+    if !path.starts_with('/') || path.starts_with("//") || path.starts_with("/\\") {
+        return None;
+    }
+    #[cfg(windows)]
+    let path = {
+        let bytes = path.as_bytes();
+        if bytes.len() < 4 || !bytes[1].is_ascii_alphabetic()
+            || bytes[2] != b':' || bytes[3] != b'/' || path.contains('\\') {
+            return None;
+        }
+        &path[1..]
+    };
+    Path::new(path).is_absolute().then(|| PathBuf::from(path))
+}
+
+#[cfg(test)]
+pub(super) fn fixture_uri_path(path: &Path) -> String {
+    let path = path.to_str().unwrap();
+    #[cfg(windows)]
+    let path = format!("/{}", path.strip_prefix(r"\\?\").unwrap_or(path).replace('\\', "/"));
+    path.to_string()
+}
+
+#[cfg(test)]
+pub(super) fn fixture_file_uri(path: &Path) -> String {
+    format!("file://{}", fixture_uri_path(path).replace('%', "%25").replace(' ', "%20").replace('#', "%23").replace('?', "%3F"))
 }
 
 #[cfg(test)]
@@ -539,16 +587,7 @@ mod tests {
     use serde_json::json;
     use std::fs::File;
 
-    fn uri(path: &Path) -> String {
-        format!(
-            "file://{}",
-            path.to_str()
-                .unwrap()
-                .replace('%', "%25")
-                .replace(' ', "%20")
-                .replace('#', "%23")
-        )
-    }
+    fn uri(path: &Path) -> String { fixture_file_uri(path) }
     fn database(root: &Path, history: serde_json::Value) -> PathBuf {
         let db = root.join("User/globalStorage/state.vscdb");
         fs::create_dir_all(db.parent().unwrap()).unwrap();
@@ -704,7 +743,7 @@ mod tests {
         let catalog = cursor_catalog_at(&root).unwrap();
         assert_eq!(catalog.workspaces[0].config_path, config);
         assert_eq!(catalog.workspaces[0].folders, [actual]);
-        let before = fs::symlink_metadata(&side).unwrap();
+        let before = open_metadata_file(&side).unwrap();
         fs::rename(&side, side.with_extension("saved")).unwrap();
         let sentinel = root.join("synthetic-chat-sentinel.txt");
         // Even content that happens to parse as metadata is outside this leaf.
@@ -727,7 +766,7 @@ mod tests {
         let side = root.join("User/workspaceStorage/native/workspace.json");
         fs::create_dir_all(side.parent().unwrap()).unwrap();
         fs::write(&side, "{}").unwrap();
-        let before = fs::symlink_metadata(&side).unwrap();
+        let before = open_metadata_file(&side).unwrap();
         fs::rename(&side, side.with_extension("saved")).unwrap();
         let name = CString::new(side.as_os_str().as_bytes()).unwrap();
         // SAFETY: name is a live NUL-terminated path; this creates only a fixture.
@@ -753,9 +792,35 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let side = temp.path().join("workspace.json");
         fs::write(&side, "{}").unwrap();
-        let before = fs::symlink_metadata(&side).unwrap();
+        let before = open_metadata_file(&side).unwrap();
         fs::rename(&side, temp.path().join("saved.json")).unwrap();
         fs::write(&side, "[]").unwrap();
+        assert!(read_bounded_file(&side, &before).is_err());
+        assert_eq!(read_bounded(&side).unwrap(), b"[]");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_metadata_replacement_is_rejected_even_with_identical_size_and_times() {
+        use std::{ffi::c_void, os::windows::{fs::MetadataExt, io::AsRawHandle}};
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn SetFileTime(file: *mut c_void, creation: *const [u32; 2], access: *const [u32; 2], write: *const [u32; 2]) -> i32;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let side = temp.path().join("workspace.json");
+        fs::write(&side, "{}").unwrap();
+        let before = open_metadata_file(&side).unwrap();
+        let metadata = before.metadata().unwrap();
+        fs::rename(&side, temp.path().join("saved.json")).unwrap();
+        fs::write(&side, "[]").unwrap();
+        let replacement = fs::OpenOptions::new().write(true).open(&side).unwrap();
+        let stamp = |time: u64| [time as u32, (time >> 32) as u32];
+        let creation = stamp(metadata.creation_time());
+        let write = stamp(metadata.last_write_time());
+        assert_ne!(unsafe { SetFileTime(replacement.as_raw_handle(), &creation, std::ptr::null(), &write) }, 0);
+        drop(replacement);
+        assert!(same_metadata_file(&metadata, &fs::symlink_metadata(&side).unwrap()));
         assert!(read_bounded_file(&side, &before).is_err());
         assert_eq!(read_bounded(&side).unwrap(), b"[]");
     }
@@ -769,7 +834,7 @@ mod tests {
         let db = database(&root, json!({"entries":[{"folderUri": uri(&cwd)}]}));
         let conn = Connection::open(&db).unwrap();
         conn.execute("INSERT INTO ItemTable VALUES('glass.localAgentProjects.v1', ?1)",
-            [json!([{"workspace":{"id":"native","uri":{"$mid":1,"scheme":"file","path":cwd,"authority":""}},"isArchived":true,"name":"ignored"}]).to_string()]).unwrap();
+            [json!([{"workspace":{"id":"native","uri":{"$mid":1,"scheme":"file","path":fixture_uri_path(&cwd),"authority":""}},"isArchived":true,"name":"ignored"}]).to_string()]).unwrap();
         let projects = cursor_projects_at(&root).unwrap();
         assert_eq!(projects.len(), 1);
         assert_eq!(projects[0].path, cwd);
@@ -781,15 +846,20 @@ mod tests {
 
     #[test]
     fn uri_decodes_unicode_plus_and_reserved_bytes_and_rejects_remote() {
-        assert_eq!(
-            local_file_uri("file:///tmp/%E4%B8%AD%20a+%23%25").unwrap(),
-            Some(PathBuf::from("/tmp/中 a+#%"))
-        );
+        let (raw, expected) = if cfg!(windows) {
+            ("file:///C:/tmp/%E4%B8%AD%20a+%23%25", "C:/tmp/中 a+#%")
+        } else { ("file:///tmp/%E4%B8%AD%20a+%23%25", "/tmp/中 a+#%") };
+        assert_eq!(local_file_uri(raw).unwrap(), Some(PathBuf::from(expected)));
         for raw in [
             "file://server/tmp",
             "vscode-remote://host/tmp",
             "/tmp/plain",
             "file:relative",
+            "file:",
+            "file://",
+            "file:////server/share",
+            "file:///%2Fserver/share",
+            "file:///%5Cserver/share",
         ] {
             assert_eq!(local_file_uri(raw).unwrap(), None);
         }
@@ -797,9 +867,45 @@ mod tests {
             "file:///tmp/%00",
             "file:///tmp/%ff",
             "file:///tmp/%QZ",
+            "file:///tmp/%+1",
             "file:///tmp/%",
         ] {
             assert!(local_file_uri(raw).is_err());
+        }
+    }
+
+    #[test]
+    fn uri_components_reject_remote_relative_empty_and_encoded_authorities() {
+        for path in ["", "relative", "//server/share", "/\\server/share"] {
+            assert_eq!(UriComponents { scheme: "file".into(), path: path.into(), authority: String::new() }
+                .local_path().unwrap(), None);
+        }
+        let path = if cfg!(windows) { "/C:/local/literal%20+中" } else { "/local/literal%20+中" };
+        let expected = if cfg!(windows) { "C:/local/literal%20+中" } else { path };
+        assert_eq!(UriComponents { scheme: "file".into(), path: path.into(), authority: String::new() }
+            .local_path().unwrap(), Some(PathBuf::from(expected)));
+        for (scheme, authority) in [("file", "server"), ("vscode-remote", ""), ("file", "localhost")] {
+            assert_eq!(UriComponents { scheme: scheme.into(), path: path.into(), authority: authority.into() }
+                .local_path().unwrap(), None);
+        }
+        for path in ["/bad\0path".to_string(), format!("/{}", "x".repeat(MAX_PATH))] {
+            assert!(UriComponents { scheme: "file".into(), path, authority: String::new() }.local_path().is_err());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_file_uris_require_an_absolute_local_drive() {
+        for (uri, expected) in [("file:///C:/repo", "C:/repo"), ("file:///c%3A/repo%2520+%E4%B8%AD", "c:/repo%20+中")] {
+            assert_eq!(local_file_uri(uri).unwrap(), Some(PathBuf::from(expected)));
+        }
+        for uri in ["file:///C:repo", "file:///C:", "file:///tmp/repo", "file:///C:/%5C%5Cserver/share",
+            "file://localhost/C:/repo", "file:////?/C:/repo", "file:C:repo"] {
+            assert_eq!(local_file_uri(uri).unwrap(), None, "{uri}");
+        }
+        for path in ["/C:repo", "/C:", "/tmp/repo", r"C:\repo", r"\\?\C:\repo", r"\\server\share"] {
+            assert_eq!(UriComponents { scheme: "file".into(), path: path.into(), authority: String::new() }
+                .local_path().unwrap(), None, "{path}");
         }
     }
 

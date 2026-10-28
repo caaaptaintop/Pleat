@@ -269,10 +269,10 @@ mod tests {
 
     #[test]
     fn decodes_utf8_spaces_plus_and_percent_exactly_once() {
-        assert_eq!(
-            decode_cwd("%2f%E4%B8%AD%E6%96%87%20a+b%252F").as_deref(),
-            Some("/中文 a+b%2F")
-        );
+        let (encoded, expected) = if cfg!(windows) {
+            ("C%3A%2f%E4%B8%AD%E6%96%87%20a+b%252F", "C:/中文 a+b%2F")
+        } else { ("%2f%E4%B8%AD%E6%96%87%20a+b%252F", "/中文 a+b%2F") };
+        assert_eq!(decode_cwd(encoded).as_deref(), Some(expected));
         for name in [
             "%",
             "%2",
@@ -282,6 +282,8 @@ mod tests {
             "%252Ftmp",
             "relative",
             "file%3A%2Ftmp",
+            "file%3A%2F%2F%2FC%3A%2Fproject",
+            "",
         ] {
             assert_eq!(decode_cwd(name), None, "{name}");
         }

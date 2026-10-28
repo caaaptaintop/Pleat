@@ -471,6 +471,19 @@ fn validate_schema(connection: &Connection, query: &PathQuery) -> rusqlite::Resu
 mod tests {
     use super::*;
 
+    fn p(path: &str) -> String {
+        if cfg!(windows) { format!("C:{path}") } else { path.to_owned() }
+    }
+
+    // Keep distinct database keys even when Windows PathBuf::join would
+    // normalize a verbatim path's dot component before insertion.
+    fn dotted(path: &Path) -> PathBuf {
+        let path = path.to_str().unwrap();
+        #[cfg(windows)]
+        let path = path.strip_prefix(r"\\?\").unwrap_or(path);
+        PathBuf::from(format!("{path}{sep}.", sep = std::path::MAIN_SEPARATOR))
+    }
+
     fn catalog(root: &Path) -> Connection {
         let connection = Connection::open(root.join("workbuddy.db")).unwrap();
         connection.execute_batch(
@@ -530,7 +543,7 @@ mod tests {
         let file = root.join("ordinary-file");
         std::fs::write(&file, "not a directory").unwrap();
         let connection = catalog(&root);
-        let mut paths = vec![project.clone(), project.join("."), root.join("missing"),
+        let mut paths = vec![project.clone(), dotted(&project), root.join("missing"),
             PathBuf::from("relative"), file];
         #[cfg(unix)]
         {
@@ -571,7 +584,7 @@ mod tests {
         let registered = root.join("registered"); let session_only = root.join("session-only");
         std::fs::create_dir(&registered).unwrap(); std::fs::create_dir(&session_only).unwrap();
         let connection = catalog(&root);
-        for path in [&registered, &registered.join(".")] {
+        for path in [&registered, &dotted(&registered)] {
             connection.execute("INSERT INTO workspaces VALUES(?1, 1)", [path.to_str().unwrap()]).unwrap();
         }
         for user in ["reader-current", "", "other-user"] {
@@ -725,26 +738,26 @@ mod tests {
             ("/empty-settings", Some("reader-current"), "local", None, Some("")),
         ] {
             connection.execute("INSERT INTO sessions(cwd,user_id,transport,deleted_at,is_playground,session_settings,title) VALUES(?1,?2,?3,?4,0,?5,'private-body-not-projected')",
-                rusqlite::params![path,user,transport,deleted,settings]).unwrap();
+                rusqlite::params![p(path),user,transport,deleted,settings]).unwrap();
         }
         drop(connection);
         let paths = workbuddy_paths_local(&temp.path().join("workbuddy.db"), &workbuddy_scope(temp.path())).unwrap();
         assert_eq!(paths.into_iter().collect::<BTreeSet<_>>(), BTreeSet::from([
-            "/current".into(), "/legacy".into(), "/numeric-tag".into(), "/empty-settings".into(),
+            p("/current"), p("/legacy"), p("/numeric-tag"), p("/empty-settings"),
         ]));
     }
 
     #[test]
     fn workbuddy_space_filter_matches_explicit_false_null_and_assistant_identity() {
-        let scope = WorkBuddyScope { current_user_id: "reader-current".into(), assistant_cwd: PathBuf::from("/native/Claw") };
-        assert!(workbuddy_session_workspace("/native/project", None, None, false, &scope));
-        assert!(workbuddy_session_workspace("/native/2026-10-21-10-11-12", Some(false), None, false, &scope));
-        assert!(!workbuddy_session_workspace("/native/2026-10-21-10-11-12/", None, None, false, &scope));
-        assert!(workbuddy_session_workspace("/native/2026-10-21-10-11-1x", None, None, false, &scope));
-        assert!(!workbuddy_session_workspace("/native/project", Some(true), None, false, &scope));
-        assert!(!workbuddy_session_workspace("/native/project", Some(false), Some("team-project"), false, &scope));
-        assert!(!workbuddy_session_workspace("/NATIVE/x/../Claw/", Some(false), None, false, &scope));
-        assert!(workbuddy_session_workspace("/other/Claw", Some(false), Some(""), false, &scope));
+        let scope = WorkBuddyScope { current_user_id: "reader-current".into(), assistant_cwd: PathBuf::from(p("/native/Claw")) };
+        assert!(workbuddy_session_workspace(&p("/native/project"), None, None, false, &scope));
+        assert!(workbuddy_session_workspace(&p("/native/2026-10-21-10-11-12"), Some(false), None, false, &scope));
+        assert!(!workbuddy_session_workspace(&p("/native/2026-10-21-10-11-12/"), None, None, false, &scope));
+        assert!(workbuddy_session_workspace(&p("/native/2026-10-21-10-11-1x"), None, None, false, &scope));
+        assert!(!workbuddy_session_workspace(&p("/native/project"), Some(true), None, false, &scope));
+        assert!(!workbuddy_session_workspace(&p("/native/project"), Some(false), Some("team-project"), false, &scope));
+        assert!(!workbuddy_session_workspace(&p("/NATIVE/x/../Claw/"), Some(false), None, false, &scope));
+        assert!(workbuddy_session_workspace(&p("/other/Claw"), Some(false), Some(""), false, &scope));
         assert!(!workbuddy_session_workspace("relative", Some(false), None, false, &scope));
     }
 
@@ -793,8 +806,8 @@ mod tests {
         use rusqlite::types::Value;
         let temp = tempfile::tempdir().unwrap();
         let connection = catalog(temp.path());
-        connection.execute("INSERT INTO workspaces VALUES('/before-catalog', 1)", []).unwrap();
-        connection.execute("INSERT INTO sessions(cwd,user_id,transport,is_playground) VALUES('/session','reader-current','local',0)", []).unwrap();
+        connection.execute("INSERT INTO workspaces VALUES(?1, 1)", [p("/before-catalog")]).unwrap();
+        connection.execute("INSERT INTO sessions(cwd,user_id,transport,is_playground) VALUES(?1,'reader-current','local',0)", [p("/session")]).unwrap();
         let overhead = serde_json::json!({"padding": ""}).to_string().len();
         let exact = serde_json::json!({"padding": "x".repeat(MAX_PATH_BYTES - overhead)}).to_string();
         let over = serde_json::json!({"padding": "x".repeat(MAX_PATH_BYTES + 1 - overhead)}).to_string();
@@ -811,7 +824,7 @@ mod tests {
             let result = workbuddy_paths_local(&db, &workbuddy_scope(temp.path()));
             if valid {
                 assert_eq!(result.unwrap().into_iter().collect::<BTreeSet<_>>(),
-                    BTreeSet::from(["/before-catalog".into(), "/session".into()]));
+                    BTreeSet::from([p("/before-catalog"), p("/session")]));
             } else {
                 assert!(result.unwrap_err().to_string().contains("状态未知"));
             }

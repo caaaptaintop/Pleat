@@ -549,6 +549,8 @@ impl Item {
                 self.instructions.push(crate::host_instructions::RulePlan::for_openclaw(&self.project, &logical, &self.skill.source, action == Action::Install)?);
             }
             self.instructions = crate::host_instructions::RulePlan::merge_all(std::mem::take(&mut self.instructions))?;
+            #[cfg(not(unix))]
+            ensure!(self.instructions.is_empty(), "此平台尚未支持原生适配受管写入，未修改安装入口");
             // Share each config snapshot immediately, before accumulating a
             // batch of skills that all refer to that same native document.
             for instruction in &mut self.instructions { instruction.coalesce(instruction_pool)?; }
@@ -615,7 +617,8 @@ impl Item {
                         let source = self.skill.source.canonicalize()?;
                         install_link(&self.path, &source)?;
                         let created = directory_link::inspect(&self.path)?.context("缺少刚创建的链接")?;
-                        ensure!(created.target == source, "新链接被替换，已保留当前对象");
+                        ensure!(crate::library::storage::storage_path_spelling(&created.target)
+                            == crate::library::storage::storage_path_spelling(&source), "新链接被替换，已保留当前对象");
                         self.operation = Some(Operation::Link { logical: logical.clone(), expected: Some(created), identity: Some(entry_identity(&self.path)?) });
                     }
                     #[cfg(test)]
