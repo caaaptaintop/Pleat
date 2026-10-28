@@ -192,6 +192,10 @@ fn isolated(name: &str, run: impl FnOnce(&Fixture)) {
         ] {
             command.env_remove(key);
         }
+        // Windows dirs::home_dir uses the OS Known Folder, not USERPROFILE.
+        // Keep native OpenClaw reads inside the fixture with its own override.
+        #[cfg(windows)]
+        command.env("OPENCLAW_HOME", &home);
         if name == "openclaw_profile_keeps_global_root_separate" {
             command
                 .env_remove("OPENCLAW_STATE_DIR")
@@ -206,7 +210,7 @@ fn isolated(name: &str, run: impl FnOnce(&Fixture)) {
         }
         if name.starts_with("openclaw_review_home_") {
             command
-                .env("OPENCLAW_HOME", "~/relocated")
+                .env("OPENCLAW_HOME", if cfg!(windows) { home.join("relocated").into_os_string() } else { "~/relocated".into() })
                 .env_remove("OPENCLAW_STATE_DIR")
                 .env_remove("OPENCLAW_CONFIG_PATH");
             if name.ends_with("profile") {
@@ -967,7 +971,13 @@ fn openclaw_global_root_allows_links_and_conflicts_keep_user_files() {
                 assert!(f.visible(&f.home).iter().any(|s| s.name == "probe"));
             }
             #[cfg(windows)]
-            assert_native_write_refused(f, &f.home, &f.source, "probe");
+            {
+                // The fixture cannot replace Windows' OS-global home. Keep
+                // the root mapping above and check writes in a trusted scope.
+                f.configure(json!([f.source]));
+                assert_native_write_refused(f, &f.workspace, &f.source, "probe");
+                assert!(f.state.join("skills/probe").symlink_metadata().is_err());
+            }
             f.configure(json!([f.source]));
             let occupied = f.workspace.join("skills/probe");
             write_skill(&occupied, "user-owned", "keep");
@@ -1024,7 +1034,11 @@ fn openclaw_profile_keeps_global_root_separate() {
             );
         }
         #[cfg(windows)]
-        assert_native_write_refused(f, &f.home, &f.source, "probe");
+        {
+            f.configure(json!([f.source]));
+            assert_native_write_refused(f, &f.workspace, &f.source, "probe");
+            assert!(f.state.join("skills/probe").symlink_metadata().is_err());
+        }
         assert!(
             f.home
                 .join(".openclaw/skills/probe")
@@ -1061,7 +1075,13 @@ fn relocated_home_contract(name: &str) {
             json!({"agents":{"entries":{"reviewer":{"workspace":"~/workspace"}}},
             "skills":{"load":{"allowSymlinkTargets":["~/trusted"],"extraDirs":["~/extra"]}}}),
         );
+        let source_before = fs::read(f.source.join("SKILL.md")).unwrap();
+        let local_before = fs::read(f.source.join("local-data/keep")).unwrap();
+        #[cfg(windows)]
+        let config_before = fs::read(&f.config).unwrap();
         let projects = f.projects();
+        assert_eq!(projects.len(), 1, "relocated-home discovery failed: config={:?}, diagnostic={:?}",
+            f.config, f.estimate(&native_workspace).diagnostic);
         assert_eq!(projects[0].path, native_workspace);
         assert_eq!(
             projects[0].native_workspaces[0].source_id.as_deref(),
@@ -1117,7 +1137,14 @@ fn relocated_home_contract(name: &str) {
             );
         }
         #[cfg(windows)]
-        assert_native_write_refused(f, &f.home, &f.source, "probe");
+        {
+            // HOME/USERPROFILE cannot impersonate the Windows Known Folder.
+            // Keep the pure global-root mapping above and exercise managed
+            // write refusal in the explicitly trusted fixture workspace.
+            assert_native_write_refused(f, &native_workspace, &right, "probe");
+            assert!(f.state.join("skills/probe").symlink_metadata().is_err());
+            assert_eq!(fs::read(&f.config).unwrap(), config_before);
+        }
         assert!(
             f.home
                 .join(".openclaw/skills/probe")
@@ -1132,7 +1159,8 @@ fn relocated_home_contract(name: &str) {
             &[InstallTarget::OpenClaw],
         )
         .unwrap();
-        assert!(f.source.join("SKILL.md").is_file());
+        assert_eq!(fs::read(f.source.join("SKILL.md")).unwrap(), source_before);
+        assert_eq!(fs::read(f.source.join("local-data/keep")).unwrap(), local_before);
     });
 }
 
