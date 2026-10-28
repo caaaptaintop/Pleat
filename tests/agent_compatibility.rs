@@ -251,6 +251,7 @@ fn explicit_agent_inspection_does_not_require_or_create_project_affiliation() {
             .env("HOME", &home).env("USERPROFILE", &home)
             .env("KITTER_HOME", root.join("kitter"))
             .env("KITTER_PROMA_HOME", root.join("proma"))
+            .env("KITTER_CODEX_PROJECTS_HOME", home.join(".codex"))
             .env("PATH", "").output().unwrap();
         assert!(output.status.success(), "isolated inspection failed: status={}, stderr={}",
             output.status, String::from_utf8_lossy(&output.stderr));
