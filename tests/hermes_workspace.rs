@@ -307,7 +307,7 @@ fn isolated(name: &str, run: impl FnOnce(Fixture)) {
             .env("HOME", &home)
             .env("USERPROFILE", &home)
             .env("PATH", root.join("bin"))
-            .env("HERMES_HOME", "$HOME/.hermes/profiles/work")
+            .env("HERMES_HOME", if cfg!(windows) { r"$HOME\.hermes\profiles\work" } else { "$HOME/.hermes/profiles/work" })
             .env("HERMES_DATA_DIR_SUFFIX", "")
             .env("KITTER_HOME", root.join("pleat-data"))
             .env("KITTER_CODEX_PROJECTS_HOME", home.join(".codex"))
