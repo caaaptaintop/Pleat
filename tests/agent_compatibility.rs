@@ -146,11 +146,13 @@ fn run_case(id: &str, directory: &str, test_name: &str) {
     #[cfg(windows)]
     if matches!(id, "claude-code" | "opencode" | "pi" | "omp" | "grok" | "antigravity"
         | "droid" | "copilot" | "trae" | "workbuddy" | "openclaw" | "hermes") {
-        const UNSUPPORTED: &str = "此平台尚未支持原生适配受管写入";
+        let unsupported = if matches!(id, "hermes" | "openclaw") {
+            "此平台尚未核验原生配置 ACL"
+        } else { "此平台尚未支持原生适配受管写入" };
         assert_eq!(install.items.len(), 1, "{id}");
         assert_eq!(install.count(Disposition::Protected), 1, "{id}");
         assert_eq!(install.count(Disposition::Change), 0, "{id}");
-        assert!(install.items[0].reason.as_deref().unwrap().contains(UNSUPPORTED), "{id}: {install:?}");
+        assert!(install.items[0].reason.as_deref().unwrap().contains(unsupported), "{id}: {install:?}");
         // A protected batch item is a no-op; the direct API reports the refusal.
         assert_eq!(install.execute().changed(), 0, "{id}");
         assert_eq!(snapshot_tree(&root), before, "{id}: blocked preview/execute changed fixture");
@@ -158,7 +160,7 @@ fn run_case(id: &str, directory: &str, test_name: &str) {
             .find(|target| agent.owns_target(*target))
             .unwrap();
         let error = kitter::project::install_from_path(&project, &source, NAME, &[target]).unwrap_err();
-        assert!(format!("{error:#}").contains(UNSUPPORTED), "{id}: {error:#}");
+        assert!(format!("{error:#}").contains(unsupported), "{id}: {error:#}");
         assert!(project.join(directory).join(NAME).symlink_metadata().is_err(), "{id}: link created on refusal");
         assert_eq!(snapshot_tree(&root), before, "{id}: refused install changed source/local-data or native entries");
         return;
@@ -250,7 +252,8 @@ fn explicit_agent_inspection_does_not_require_or_create_project_affiliation() {
             .env("KITTER_HOME", root.join("kitter"))
             .env("KITTER_PROMA_HOME", root.join("proma"))
             .env("PATH", "").output().unwrap();
-        assert!(output.status.success(), "isolated inspection failed");
+        assert!(output.status.success(), "isolated inspection failed: status={}, stderr={}",
+            output.status, String::from_utf8_lossy(&output.stderr));
         serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
     };
     let selected = run(&["project", project.to_str().unwrap(), "--agent", "trae", "--json"]);

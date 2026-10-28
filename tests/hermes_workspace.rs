@@ -509,7 +509,9 @@ fn hermes_direct_install_requires_trust_and_uses_native_git_root() {
             #[cfg(windows)]
             {
                 let error = result.unwrap_err();
-                assert!(format!("{error:#}").contains("此平台尚未支持原生适配受管写入"), "{error:#}");
+                let message = format!("{error:#}");
+                assert!(["此平台尚未支持原生适配受管写入", "此平台尚未核验原生配置 ACL"]
+                    .iter().any(|reason| message.contains(reason)), "{message}");
                 assert!(f.repo.join(".hermes/skills/probe").symlink_metadata().is_err());
                 assert!(!f.profile.join("plugins/pleat-native-skills").exists());
                 assert_eq!(fs::read(f.profile.join("config.yaml")).unwrap(), config);

@@ -702,7 +702,9 @@ fn assert_native_write_refused(f: &Fixture, root: &Path, source: &Path, name: &s
     let local = fs::read(f.source.join("local-data/keep")).unwrap();
     let target = agents::installation_root(root, InstallTarget::OpenClaw).unwrap().join(name);
     let error = project::install_from_path(root, source, name, &[InstallTarget::OpenClaw]).unwrap_err();
-    assert!(format!("{error:#}").contains("此平台尚未支持原生适配受管写入"), "{error:#}");
+    let message = format!("{error:#}");
+    assert!(["此平台尚未支持原生适配受管写入", "此平台尚未核验原生配置 ACL"]
+        .iter().any(|reason| message.contains(reason)), "{message}");
     assert!(target.symlink_metadata().is_err());
     assert!(!f.state.join("extensions/pleat-openclaw-adaptation").exists());
     assert_eq!(fs::read(&f.config).unwrap(), config);

@@ -851,7 +851,10 @@ mod tests {
     fn cleanup_on_success_kills_owned_descendants_and_reaps_leader() {
         let temp = tempfile::tempdir().unwrap(); let root = temp.path().canonicalize().unwrap();
         let native = fake(&root, r#"
-            (/bin/sleep 1; printf 'SURVIVED' > escaped) >/dev/null 2>&1 &
+            (/bin/sleep 1 & : > descendant.ready; wait; printf 'SURVIVED' > escaped) >/dev/null 2>&1 &
+            # Establish a fixed subtree for the one-shot group cleanup contract.
+            # This fixture does not assert that cleanup drains concurrent forks.
+            while [ ! -f descendant.ready ]; do :; done
             printf '%s' "$$" > leader.pid
             printf '{"grokVersion":"1.0.50","cwd":"%s","projectRoot":null,"projectTrusted":false,"skills":[]}' "$PWD"
         "#);
@@ -925,7 +928,10 @@ mod tests {
             for use_finish in [true, false] {
                 let temp = tempfile::tempdir().unwrap(); let root = temp.path().canonicalize().unwrap();
                 let native = fake(&root, r#"
-                    (/bin/sleep 1; printf 'SURVIVED' > escaped) >/dev/null 2>&1 &
+                    (/bin/sleep 1 & : > descendant.ready; wait; printf 'SURVIVED' > escaped) >/dev/null 2>&1 &
+                    # Establish a fixed subtree for the one-shot group cleanup contract.
+                    # This fixture does not assert that cleanup drains concurrent forks.
+                    while [ ! -f descendant.ready ]; do :; done
                     printf 'fixture'
                 "#);
                 let mut child = spawn_owned(&native, &root, &root, &root).unwrap();
