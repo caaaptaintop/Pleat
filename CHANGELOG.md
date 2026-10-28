@@ -1,3 +1,9 @@
+# Unreleased
+
+- Make CI path fixtures portable and normalize Windows junction targets and local file URIs.
+- Reject unsupported native adaptation writes before creating installation links on Windows. Keep Unix publication contracts and test Windows refusal and source preservation explicitly.
+- Correct the platform table: Windows native adaptation writes remain unsupported and Windows is not a verified release platform.
+
 # Pleat v0.1.12
 
 ## Updates

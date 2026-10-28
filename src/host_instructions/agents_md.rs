@@ -68,7 +68,8 @@ mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
     fn entry(name: &str) -> (String, String) {
-        let path = format!("/project/.factory/skills/{name}/local-data/ADAPTATION.md");
+        let path = std::path::absolute("project/.factory/skills").unwrap()
+            .join(name).join("local-data/ADAPTATION.md").to_str().unwrap().to_owned();
         let marker = format!("pleat-droid-adaptation-v1:{:x}", Sha256::digest(path.as_bytes()));
         (path, marker)
     }

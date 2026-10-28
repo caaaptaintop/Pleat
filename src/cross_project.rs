@@ -549,6 +549,8 @@ impl Item {
                 self.instructions.push(crate::host_instructions::RulePlan::for_openclaw(&self.project, &logical, &self.skill.source, action == Action::Install)?);
             }
             self.instructions = crate::host_instructions::RulePlan::merge_all(std::mem::take(&mut self.instructions))?;
+            #[cfg(not(unix))]
+            ensure!(self.instructions.is_empty(), "此平台尚未支持原生适配受管写入，未修改安装入口");
             // Share each config snapshot immediately, before accumulating a
             // batch of skills that all refer to that same native document.
             for instruction in &mut self.instructions { instruction.coalesce(instruction_pool)?; }

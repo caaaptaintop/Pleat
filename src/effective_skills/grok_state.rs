@@ -631,12 +631,13 @@ fn collect_inspect(mut child: OwnedChild, deadline: Instant, limit: usize) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::fixture_path;
 
     fn report() -> Value {
-        serde_json::json!({"grokVersion":"1.0.50","cwd":"/synthetic/project",
-            "projectRoot":"/synthetic/project","projectTrusted":false,
+        serde_json::json!({"grokVersion":"1.0.50","cwd":fixture_path("/synthetic/project"),
+            "projectRoot":fixture_path("/synthetic/project"),"projectTrusted":false,
             "skills":[{"name":"exact-Native_Name","description":"synthetic\nonly",
-                "source":{"type":"user","path":"/synthetic/custom/skills/a/SKILL.md"},
+                "source":{"type":"user","path":fixture_path("/synthetic/custom/skills/a/SKILL.md")},
                 "userInvocable":true}]})
     }
     fn parse(value: &Value) -> Result<NativeCatalog, Diagnostic> {
@@ -685,13 +686,13 @@ mod tests {
         assert_eq!(parse(&value).unwrap_err(), Diagnostic::ConfigurationWarning);
         assert_eq!(parse_json(b"SECRET_NOT_JSON").unwrap_err(), Diagnostic::InvalidReport);
         assert_eq!(parse_json(&vec![b' '; MAX_STDOUT + 1]).unwrap_err(), Diagnostic::OutputLimit);
-        assert_eq!(parse_for_cwd(&serde_json::to_vec(&report()).unwrap(), Path::new("/other")).unwrap_err(), Diagnostic::CwdMismatch);
+        assert_eq!(parse_for_cwd(&serde_json::to_vec(&report()).unwrap(), &fixture_path("/other")).unwrap_err(), Diagnostic::CwdMismatch);
     }
 
     #[test]
     fn unknown_sources_and_unsafe_paths_never_get_guessed() {
         for source in [serde_json::json!({"type":"user","path":"relative/SKILL.md"}),
-            serde_json::json!({"type":"user","path":"/bad\npath"}),
+            serde_json::json!({"type":"user","path":fixture_path("/bad\npath")}),
             serde_json::json!({"type":"user","path":4}), Value::Null]
         {
             let mut value = report(); value["skills"][0]["source"] = source;
@@ -700,13 +701,13 @@ mod tests {
             assert!(parsed.skills[0].source.path.is_none());
         }
         for kind in ["project", "configToml", "bundled", "server"] {
-            let source = parse_source(&serde_json::json!({"type":kind,"path":"/synthetic/SKILL.md"}));
+            let source = parse_source(&serde_json::json!({"type":kind,"path":fixture_path("/synthetic/SKILL.md")}));
             assert_ne!(source.kind, SourceKind::Unknown);
         }
         assert_eq!(parse_source(&serde_json::json!({"type":"builtin"})).path, None);
-        let plugin = parse_source(&serde_json::json!({"type":"plugin","plugin_name":"native-provider","path":"/synthetic/SKILL.md"}));
+        let plugin = parse_source(&serde_json::json!({"type":"plugin","plugin_name":"native-provider","path":fixture_path("/synthetic/SKILL.md")}));
         assert_eq!(plugin.plugin_name.as_deref(), Some("native-provider"));
-        assert_eq!(parse_source(&serde_json::json!({"type":"plugin","path":"/synthetic/SKILL.md"})).kind, SourceKind::Unknown);
+        assert_eq!(parse_source(&serde_json::json!({"type":"plugin","path":fixture_path("/synthetic/SKILL.md")})).kind, SourceKind::Unknown);
     }
 
     #[test]
@@ -719,6 +720,7 @@ mod tests {
             ("managed", None, None, SourceKind::Managed),
             ("future", None, None, SourceKind::Unknown),
         ] {
+            let path = path.map(fixture_path);
             let mut value = report();
             value["skills"][0]["source"] = serde_json::json!({"type":label,"path":path,"plugin_name":plugin});
             // No plugin field is valid for builtin/managed (null is not a name).
@@ -730,7 +732,7 @@ mod tests {
             let skill = &catalog.skills[0];
             assert_eq!(skill.source.source_type, label);
             assert_eq!(skill.source.kind, kind);
-            assert_eq!(skill.source.path, path.filter(|path| Path::new(path).is_absolute()).map(PathBuf::from));
+            assert_eq!(skill.source.path, path.filter(|path| path.is_absolute()));
             assert_eq!(skill.source.plugin_name.as_deref(), plugin);
             assert_eq!(skill.name, "exact-Native_Name");
             assert_eq!(skill.description, "synthetic\nonly");
@@ -739,10 +741,10 @@ mod tests {
             assert_eq!(skill.invocable_as.as_deref(), Some("user:login"));
         }
         for label in ["", "bad\nlabel", &"x".repeat(129)] {
-            let source = parse_source(&serde_json::json!({"type":label,"path":"/synthetic/hint"}));
+            let source = parse_source(&serde_json::json!({"type":label,"path":fixture_path("/synthetic/hint")}));
             assert_eq!(source.source_type, "unknown");
             assert_eq!(source.kind, SourceKind::Unknown);
-            assert_eq!(source.path, Some(PathBuf::from("/synthetic/hint")));
+            assert_eq!(source.path, Some(fixture_path("/synthetic/hint")));
         }
     }
 

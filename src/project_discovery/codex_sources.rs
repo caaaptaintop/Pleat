@@ -141,7 +141,7 @@ mod tests {
     #[test]
     fn unresolved_home_keeps_independent_system_and_absolute_environment_candidates() {
         let root = tempfile::tempdir().unwrap();
-        let base = root.path().canonicalize().unwrap();
+        let base = root.path().to_path_buf();
         let system = base.join("system.toml");
         fs::write(&system, "sqlite_home = 'system-data'\n").unwrap();
         let env = base.join("env-data");

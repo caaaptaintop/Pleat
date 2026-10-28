@@ -161,7 +161,7 @@ kitter library --set /absolute/path/to/existing/library
 | --- | --- |
 | macOS ARM64 | 本机桌面、CLI、打包及隔离示例操作已验证。 |
 | macOS Intel | CI 核心测试与桌面编译检查通过。 |
-| Windows x64 | CI 核心测试与桌面编译检查通过。 |
+| Windows x64 | 仅部分基础功能；原生适配受管写入尚未支持，不作为已验证发布平台。 |
 | Linux x64 | CI 核心测试与桌面编译检查通过。 |
 
 Windows、Linux 和 Intel Mac 的原生桌面体验仍需验证。各提交的检查结果见 [GitHub Actions](https://github.com/caaaptaintop/Pleat/actions)。

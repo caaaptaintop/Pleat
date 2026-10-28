@@ -927,7 +927,7 @@ mod tests {
             Some(&system_config), &user_config, SqliteHomeEnv::Known(extra.to_str().unwrap()), None);
         assert!(locations.diagnostics.is_empty());
         assert_eq!(locations.candidates.len(), 2);
-        assert_eq!(locations.candidates.iter().find(|candidate| candidate.root == extra).unwrap().origins.len(), 3);
+        assert_eq!(locations.candidates.iter().find(|candidate| path_identity(&candidate.root) == extra).unwrap().origins.len(), 3);
         let paths = [&user_config, &system_config, &desktop, &home.join("state_5.sqlite"), &extra.join("state_5.sqlite")];
         let before = paths.iter().map(|path| std::fs::read(path).unwrap()).collect::<Vec<_>>();
         let rows = discover_codex_locations_at(&home, &locations, &[]).unwrap();

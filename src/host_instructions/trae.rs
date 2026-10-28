@@ -54,6 +54,7 @@ mod tests {
     use super::*;
     use std::fs;
 
+    #[cfg(unix)]
     #[test]
     fn project_and_global_entries_preserve_sources_and_existing_rules() {
         let temp = tempfile::tempdir().unwrap();
@@ -100,6 +101,7 @@ mod tests {
         assert_ne!(first.body, second.body);
     }
 
+    #[cfg(unix)]
     #[test]
     fn conflict_or_changed_rule_is_preserved() {
         let temp = tempfile::tempdir().unwrap();
@@ -138,6 +140,7 @@ mod tests {
         assert_eq!(first.body, second.body);
     }
 
+    #[cfg(unix)]
     #[test]
     fn removal_keeps_rule_when_the_installation_preimage_changes() {
         let temp = tempfile::tempdir().unwrap();

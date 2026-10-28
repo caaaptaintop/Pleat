@@ -25,6 +25,9 @@ pub(crate) fn inspect(path: &Path) -> io::Result<Option<DirectoryLink>> {
 
     #[cfg(windows)]
     if let Ok(target) = junction::get_target(path) {
+        // Junctions store a DOS path, while canonicalize returns a verbatim
+        // path. Compare existing targets in the same spelling as sources.
+        let target = target.canonicalize().unwrap_or(target);
         return Ok(Some(DirectoryLink {
             kind: DirectoryLinkKind::Junction,
             target,
@@ -124,6 +127,22 @@ mod tests {
         fs::create_dir(&directory).unwrap();
 
         assert_eq!(inspect(&directory).unwrap(), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn junction_targets_match_canonical_sources_and_keep_dangling_targets() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        let link = temp.path().join("link");
+        fs::create_dir(&target).unwrap();
+        create(&target.canonicalize().unwrap(), &link).unwrap();
+        let inspected = inspect(&link).unwrap().unwrap();
+        assert_eq!(inspected.target, target.canonicalize().unwrap());
+        fs::remove_dir(&target).unwrap();
+        assert_eq!(inspect(&link).unwrap().unwrap().target, junction::get_target(&link).unwrap());
+        remove(&link, inspected).unwrap();
+        assert!(!link.exists());
     }
 
     #[cfg(unix)]

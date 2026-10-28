@@ -279,7 +279,7 @@ fn checked_text(path: &Path) -> Result<&str, UnknownCode> {
 fn absolute_metadata_path(path: &Path, invalid: UnknownCode) -> Result<PathBuf, UnknownCode> {
     checked_text(path)?;
     if !path.is_absolute() { return Err(invalid); }
-    Ok(lexical(path))
+    Ok(lexical(&platform_path(path)))
 }
 
 fn resolve_path(raw: &str, base: Option<&Path>, home: Observed<&Path>, missing_base: UnknownCode)
@@ -610,6 +610,20 @@ mod tests {
         use std::os::unix::ffi::OsStrExt;
         let path = Path::new(std::ffi::OsStr::from_bytes(b"/bad-\xff"));
         assert_eq!(absolute_metadata_path(path, UnknownCode::InvalidPath), Err(UnknownCode::InvalidEncoding));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_catalog_candidates_share_normalized_verbatim_and_dos_roots() {
+        let home = Path::new(r"\\?\C:\profile");
+        let file = Path::new(r"\\?\C:\config\..\config.toml");
+        let configs = [ConfigInput { kind: ConfigKind::User, file,
+            text: Observed::Known("sqlite_home = 'profile'") }];
+        let out = known_catalog_locations(&inputs(home, &configs, SqliteHomeEnv::Known(r"C:\profile")));
+        assert!(out.diagnostics.is_empty());
+        assert_eq!(out.candidates.len(), 1);
+        assert_eq!(out.candidates[0].root, PathBuf::from(r"C:\profile"));
+        assert_eq!(out.candidates[0].origins.len(), 3);
     }
 
     #[cfg(windows)]

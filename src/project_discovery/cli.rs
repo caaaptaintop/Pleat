@@ -569,12 +569,13 @@ mod tests {
         assert_eq!(projects[0].path, root);
         assert!(projects[0].archive_states.iter().all(|state| state.archived.is_none()));
         let connection = rusqlite::Connection::open(&db).unwrap();
-        connection.execute("INSERT INTO project VALUES('real-root', '/', NULL)", []).unwrap();
+        let filesystem_root = root.ancestors().last().unwrap();
+        connection.execute("INSERT INTO project VALUES('real-root', ?1, NULL)", [filesystem_root.to_str().unwrap()]).unwrap();
         connection.execute("INSERT INTO project VALUES('real-project', ?1, NULL)", [root.to_str().unwrap()]).unwrap();
         drop(connection);
         let projects = opencode_projects_at(&db).unwrap();
         assert_eq!(projects.len(), 2);
-        assert!(projects.iter().any(|entry| entry.path == path_identity(Path::new("/"))));
+        assert!(projects.iter().any(|entry| entry.path == path_identity(filesystem_root)));
         assert!(projects.iter().any(|entry| entry.path == root));
     }
 
@@ -752,13 +753,14 @@ mod tests {
         drop(connection);
         assert!(opencode_projects_at(&db).unwrap().is_empty());
         let connection = rusqlite::Connection::open(&db).unwrap();
-        connection.execute("INSERT INTO project(id,worktree,time_created,time_updated,sandboxes) VALUES('real-root','/',1,1,'[]')", []).unwrap();
+        let filesystem_root = root.ancestors().last().unwrap();
+        connection.execute("INSERT INTO project(id,worktree,time_created,time_updated,sandboxes) VALUES('real-root',?1,1,1,'[]')", [filesystem_root.to_str().unwrap()]).unwrap();
         // A bad session index is irrelevant until the exact native gate opens.
         connection.execute_batch("DROP TABLE session_v2; CREATE VIEW session_v2 AS SELECT unavailable_session_reader() AS directory;").unwrap();
         drop(connection);
         let projects = opencode_projects_at(&db).unwrap();
         assert_eq!(projects.len(), 1);
-        assert_eq!(projects[0].path, path_identity(Path::new("/")));
+        assert_eq!(projects[0].path, path_identity(filesystem_root));
         let connection = rusqlite::Connection::open(&db).unwrap();
         connection.execute("UPDATE project SET id='global',worktree=?1", [root.to_str().unwrap()]).unwrap();
         drop(connection);

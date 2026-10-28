@@ -44,7 +44,7 @@ mod tests {
 
     #[test]
     fn unset_and_empty_use_the_supplied_home_without_io() {
-        let home = Path::new("/synthetic-home");
+        let home = &std::env::temp_dir().join("synthetic-home");
         for value in [None, Some(OsStr::new(""))] {
             assert_eq!(grok_config_root_from(home, value).unwrap(), home.join(".grok"));
         }
@@ -52,7 +52,8 @@ mod tests {
 
     #[test]
     fn absolute_override_is_not_trimmed_or_normalized() {
-        let value = OsStr::new("/synthetic custom/../grok ");
+        let path = std::env::temp_dir().join("synthetic custom/../grok ");
+        let value = path.as_os_str();
         assert_eq!(
             grok_config_root_from(Path::new("relative-unused-home"), Some(value)).unwrap(),
             PathBuf::from(value)
@@ -61,8 +62,9 @@ mod tests {
 
     #[test]
     fn unsupported_paths_return_only_a_fixed_error() {
-        for value in ["relative-SECRET", "~/SECRET", " ", "/SECRET\0invalid"] {
-            let error = grok_config_root_from(Path::new("/home"), Some(OsStr::new(value)))
+        let invalid = std::env::temp_dir().join("SECRET\0invalid");
+        for value in ["relative-SECRET", "~/SECRET", " ", invalid.to_str().unwrap()] {
+            let error = grok_config_root_from(&std::env::temp_dir().join("home"), Some(OsStr::new(value)))
                 .unwrap_err()
                 .to_string();
             assert_eq!(error, "Grok 配置根不是受支持的绝对路径，状态未知");

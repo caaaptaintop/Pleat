@@ -1407,13 +1407,22 @@ fn copilot_custom_root_inputs<'a>(
     Ok(custom)
 }
 
+// Logical absolute fixture paths share a native root; relative negative inputs stay relative.
+#[cfg(test)]
+fn fixture_path(path: &str) -> PathBuf {
+    match path.strip_prefix('/') {
+        Some(relative) => std::env::temp_dir().join("pleat-skills-fixture").join(relative),
+        None => PathBuf::from(path),
+    }
+}
+
 #[cfg(test)]
 mod copilot_root_tests {
     use super::*;
 
     fn context(global: bool) -> DiscoveryContext {
-        let home = PathBuf::from("/synthetic/copilot-home");
-        let cwd = if global { home.clone() } else { PathBuf::from("/synthetic/repository") };
+        let home = fixture_path("/synthetic/copilot-home");
+        let cwd = if global { home.clone() } else { fixture_path("/synthetic/repository") };
         DiscoveryContext { home, cwd: cwd.clone(), repository_root: (!global).then_some(cwd) }
     }
 
@@ -1927,7 +1936,7 @@ mod copilot_root_tests {
     #[test]
     fn nondefault_root_suppresses_only_personal_agents_and_keeps_project_roots() {
         let context = context(false);
-        let root = Path::new("/synthetic/isolated-copilot");
+        let root = &fixture_path("/synthetic/isolated-copilot");
         let roots = copilot_roots_from(&context, root, &serde_json::json!({}), None, false).unwrap();
         let paths = roots.iter().map(|root| root.path.clone()).collect::<Vec<_>>();
         for relative in [".github/skills", ".agents/skills", ".claude/skills"] {
@@ -1943,7 +1952,7 @@ mod copilot_root_tests {
     fn equivalent_default_override_with_parent_component_excludes_personal_agents() {
         let context = context(true);
         let (root, personal_agents) = crate::agents::copilot_config_selection_from(&context.home,
-            Some("/synthetic/copilot-home/.copilot/../.copilot/")).unwrap();
+            context.home.join(".copilot/../.copilot/").to_str()).unwrap();
         let roots = copilot_roots_from(&context, &root, &serde_json::json!({}), None, personal_agents).unwrap();
         assert_eq!(root, context.home.join(".copilot"));
         assert!(!personal_agents);
@@ -1953,13 +1962,14 @@ mod copilot_root_tests {
     #[test]
     fn custom_absolute_roots_follow_personal_roots_without_root_markdown() {
         let context = context(true);
-        let root = Path::new("/synthetic/isolated-copilot");
-        let settings = serde_json::json!({"skillDirectories": ["/synthetic/settings-skills"]});
+        let root = &fixture_path("/synthetic/isolated-copilot");
+        let settings_root = fixture_path("/synthetic/settings-skills");
+        let extra = fixture_path("/synthetic/environment-skills");
+        let settings = serde_json::json!({"skillDirectories": [settings_root]});
         let roots = copilot_roots_from(&context, root, &settings,
-            Some("/synthetic/environment-skills"), false).unwrap();
+            extra.to_str(), false).unwrap();
         assert_eq!(roots.iter().map(|root| root.path.clone()).collect::<Vec<_>>(), vec![
-            root.join("skills"), PathBuf::from("/synthetic/settings-skills"),
-            PathBuf::from("/synthetic/environment-skills"),
+            root.join("skills"), settings_root, extra,
         ]);
         assert!(roots.iter().all(|root| !root.include_root_markdown));
     }
@@ -1967,14 +1977,15 @@ mod copilot_root_tests {
     #[test]
     fn unsupported_custom_forms_fail_instead_of_scanning_a_default_root() {
         let context = context(true);
-        let root = Path::new("/synthetic/isolated-copilot");
+        let root = &fixture_path("/synthetic/isolated-copilot");
         for settings in [serde_json::json!([]), serde_json::json!({"skillDirectories": "bad"}),
             serde_json::json!({"skillDirectories": [""]}),
             serde_json::json!({"skillDirectories": ["~/skills"]}),
             serde_json::json!({"skillDirectories": [1]})] {
             assert!(copilot_roots_from(&context, root, &settings, None, false).is_err());
         }
-        for extra in ["relative", "/synthetic/a,,/synthetic/b"] {
+        let empty_component = format!("{},,{}", fixture_path("/synthetic/a").display(), fixture_path("/synthetic/b").display());
+        for extra in ["relative", &empty_component] {
             assert!(copilot_roots_from(&context, root, &serde_json::json!({}), Some(extra), false).is_err());
         }
     }
@@ -1983,14 +1994,15 @@ mod copilot_root_tests {
     fn native_comma_delimiter_keeps_colons_and_semicolons_literal() {
         let context = context(true);
         let config = context.home.join(".copilot");
+        let one = fixture_path("/synthetic/one");
+        let two = fixture_path("/synthetic/two");
         for (extra, expected) in [
-            ("/synthetic/one,/synthetic/two", vec!["/synthetic/one", "/synthetic/two"]),
-            ("/synthetic/one:/synthetic/two", vec!["/synthetic/one:/synthetic/two"]),
-            ("/synthetic/one;/synthetic/two", vec!["/synthetic/one;/synthetic/two"]),
+            (format!("{},{}", one.display(), two.display()), vec![one.clone(), two.clone()]),
+            (format!("{}:{}", one.display(), two.display()), vec![PathBuf::from(format!("{}:{}", one.display(), two.display()))]),
+            (format!("{};{}", one.display(), two.display()), vec![PathBuf::from(format!("{};{}", one.display(), two.display()))]),
         ] {
-            let roots = copilot_roots_from(&context, &config, &serde_json::json!({}), Some(extra), false).unwrap();
-            assert_eq!(roots.iter().skip(1).map(|root| root.path.clone()).collect::<Vec<_>>(),
-                expected.into_iter().map(PathBuf::from).collect::<Vec<_>>());
+            let roots = copilot_roots_from(&context, &config, &serde_json::json!({}), Some(&extra), false).unwrap();
+            assert_eq!(roots.iter().skip(1).map(|root| root.path.clone()).collect::<Vec<_>>(), expected);
         }
     }
 
@@ -4125,9 +4137,11 @@ mod tests {
             "name":"manual", "description":"Test", "source":{"type":"project","path":skill.join("SKILL.md")},
             "userInvocable":true
         }]));
-        assert_eq!(grok.skills[0].visibility, SkillVisibility::ManualOnly);
+        assert_eq!(grok.skills[0].visibility,
+            if cfg!(unix) { SkillVisibility::ManualOnly } else { SkillVisibility::Unverified });
         assert_eq!(grok.model_visible_count, 0);
-        assert_eq!(grok.manual_only_count, 1);
+        assert_eq!(grok.manual_only_count, usize::from(cfg!(unix)));
+        if !cfg!(unix) { assert!(grok.diagnostic.is_some()); }
 
         for policy in [
             &AntigravityPolicy as &dyn AgentSkillPolicy,
@@ -4427,7 +4441,7 @@ mod tests {
         assert!(rendered.contains("The following skills are available for use:"));
         assert!(rendered.contains("Absolute path:"));
         assert!(rendered.contains(&command.path.display().to_string()));
-        assert!(estimate.diagnostic.is_none());
+        assert_eq!(estimate.diagnostic.is_none(), cfg!(unix));
         assert_eq!(estimate.skills.len(), 1);
     }
 
@@ -4448,7 +4462,8 @@ mod tests {
         ]));
         assert_eq!(estimate.skills.len(), 1);
         assert_eq!(estimate.skills[0].path, known);
-        assert_eq!(estimate.skills[0].visibility, SkillVisibility::Automatic);
+        assert_eq!(estimate.skills[0].visibility,
+            if cfg!(unix) { SkillVisibility::Automatic } else { SkillVisibility::Unverified });
         let metadata = &estimate.diagnostic.as_ref().unwrap().metadata_only;
         assert_eq!(metadata.len(), 4);
         assert_eq!(metadata[0].source_path.as_deref(), Some(hint.as_path()));
@@ -5390,10 +5405,24 @@ mod tests {
 
     #[test]
     fn hermes_uses_home_and_explicit_external_dirs_only() {
-        let temp = tempdir().unwrap();
-        let home = temp.path().join("home");
+        const FLAG: &str = "PLEAT_HERMES_ROOT_TEST";
+        if std::env::var_os(FLAG).is_none() {
+            let temp = tempdir().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            let home = root.join("home");
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "effective_skills::tests::hermes_uses_home_and_explicit_external_dirs_only", "--nocapture"])
+                .env_clear()
+                .envs(std::env::var_os("SystemRoot").map(|value| ("SystemRoot", value)))
+                .env(FLAG, &root).env("HOME", &home).env("USERPROFILE", &home)
+                .env("HERMES_HOME", home.join(".hermes")).output().unwrap();
+            assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            return;
+        }
+        let root = PathBuf::from(std::env::var_os(FLAG).unwrap());
+        let home = root.join("home");
         let hermes = home.join(".hermes");
-        let project = temp.path().join("project");
+        let project = root.join("project");
         write_skill(&hermes.join("skills"), "local", "");
         write_skill(&hermes.join("shared"), "external", "");
         write_skill(&project.join(".agents/skills"), "not-implicit", "");

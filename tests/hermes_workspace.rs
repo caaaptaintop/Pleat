@@ -416,6 +416,8 @@ fn hermes_trust_exact_gitroot_and_profile_roots() {
     });
 }
 
+// Requires a preview accepted for native adaptation publication.
+#[cfg(unix)]
 #[test]
 fn hermes_preview_apply_rechecks_trust_and_preserves_source() {
     isolated(
@@ -456,6 +458,8 @@ fn hermes_preview_apply_rechecks_trust_and_preserves_source() {
     );
 }
 
+// Requires a preview accepted for native adaptation publication.
+#[cfg(unix)]
 #[test]
 fn hermes_git_scope_changed_after_preview_is_protected() {
     isolated("hermes_git_scope_changed_after_preview_is_protected", |f| {
@@ -476,31 +480,42 @@ fn hermes_direct_install_requires_trust_and_uses_native_git_root() {
         "hermes_direct_install_requires_trust_and_uses_native_git_root",
         |f| {
             f.configure(&[], true);
-            assert!(
-                kitter::project::install_from_path(
-                    &f.nested,
-                    &f.source,
-                    "probe",
-                    &[InstallTarget::Hermes]
-                )
-                .is_err()
-            );
-            assert!(!f.repo.join(".hermes/skills/probe").exists());
-            f.configure(&[&f.repo], true);
-            let config = fs::read(f.profile.join("config.yaml")).unwrap();
-            kitter::project::install_from_path(
+            let denied = kitter::project::install_from_path(
                 &f.nested,
                 &f.source,
                 "probe",
                 &[InstallTarget::Hermes],
-            )
-            .unwrap();
-            assert_eq!(
-                f.repo.join(".hermes/skills/probe").canonicalize().unwrap(),
-                f.source
+            ).unwrap_err();
+            assert!(format!("{denied:#}").contains("trusted_project_dirs"), "{denied:#}");
+            assert!(!f.repo.join(".hermes/skills/probe").exists());
+            f.configure(&[&f.repo], true);
+            let config = fs::read(f.profile.join("config.yaml")).unwrap();
+            let source = fs::read(f.source.join("SKILL.md")).unwrap();
+            let result = kitter::project::install_from_path(
+                &f.nested,
+                &f.source,
+                "probe",
+                &[InstallTarget::Hermes],
             );
+            #[cfg(unix)]
+            {
+                result.unwrap();
+                assert_eq!(
+                    f.repo.join(".hermes/skills/probe").canonicalize().unwrap(),
+                    f.source
+                );
+                f.assert_config_preserved_with_plugin(&config, true);
+            }
+            #[cfg(windows)]
+            {
+                let error = result.unwrap_err();
+                assert!(format!("{error:#}").contains("此平台尚未支持原生适配受管写入"), "{error:#}");
+                assert!(f.repo.join(".hermes/skills/probe").symlink_metadata().is_err());
+                assert!(!f.profile.join("plugins/pleat-native-skills").exists());
+                assert_eq!(fs::read(f.profile.join("config.yaml")).unwrap(), config);
+            }
             assert!(!f.nested.join(".hermes/skills/probe").exists());
-            f.assert_config_preserved_with_plugin(&config, true);
+            assert_eq!(fs::read(f.source.join("SKILL.md")).unwrap(), source);
         },
     );
 }

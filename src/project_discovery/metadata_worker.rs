@@ -235,19 +235,21 @@ mod tests {
 
     #[test]
     fn rejects_unbounded_or_arbitrary_queries_before_execution() {
+        let temp = tempfile::tempdir().unwrap();
         assert!(serde_json::from_str::<Request>(r#"{"path":"/x","projection":{"kind":"paths","queries":["SELECT secret FROM chat"]}}"#).is_err());
         assert!(serde_json::from_str::<Request>(r#"{"path":"/x","projection":{"kind":"open_code_projects"},"sql":"DELETE FROM project"}"#).is_err());
         assert!(Request { path: PathBuf::from("relative"), projection: Projection::OpenCodeProjects }.validate().is_err());
-        assert!(Request { path: PathBuf::from("/x"), projection: Projection::Paths { queries: vec![] } }.validate().is_err());
-        assert!(Request { path: PathBuf::from("/x"), projection: Projection::Paths { queries: vec![PathQuery::WorkBuddy; 2] } }.validate().is_err());
+        assert!(Request { path: temp.path().join("index.db"), projection: Projection::Paths { queries: vec![] } }.validate().is_err());
+        assert!(Request { path: temp.path().join("index.db"), projection: Projection::Paths { queries: vec![PathQuery::WorkBuddy; 2] } }.validate().is_err());
         let mut reply = BoundedReply(vec![0; MAX_REPLY_BYTES]);
         assert!(reply.write_all(b"x").is_err());
     }
 
     #[test]
     fn codex_project_projection_accepts_only_its_fixed_metadata_request() {
-        let raw = r#"{"path":"/native/state_5.sqlite","projection":{"kind":"codex_projects"}}"#;
-        let request: Request = serde_json::from_str(raw).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let raw = serde_json::json!({"path":temp.path().join("state_5.sqlite"),"projection":{"kind":"codex_projects"}}).to_string();
+        let request: Request = serde_json::from_str(&raw).unwrap();
         request.validate().unwrap();
         assert!(matches!(request.projection, Projection::CodexProjects));
         assert!(serde_json::from_str::<Request>(
@@ -268,14 +270,16 @@ mod tests {
         ] {
             assert!(serde_json::from_str::<Request>(json).is_err());
         }
-        for (user, assistant) in [("", "/a"), (" \t", "/a"), ("u", "relative")] {
-            let request = Request { path: PathBuf::from("/x"), projection: Projection::WorkBuddyProjects {
+        let temp = tempfile::tempdir().unwrap();
+        let assistant = temp.path().join("private-assistant");
+        for (user, assistant) in [("", assistant.as_path()), (" \t", assistant.as_path()), ("u", Path::new("relative"))] {
+            let request = Request { path: temp.path().join("index.db"), projection: Projection::WorkBuddyProjects {
                 scope: workspaces::WorkBuddyScope { current_user_id: user.into(), assistant_cwd: assistant.into() },
             }};
             assert!(request.validate().is_err());
         }
-        let request = Request { path: PathBuf::from("/x"), projection: Projection::WorkBuddyProjects {
-            scope: workspaces::WorkBuddyScope { current_user_id: "private-identity".into(), assistant_cwd: "/private-assistant".into() },
+        let request = Request { path: temp.path().join("index.db"), projection: Projection::WorkBuddyProjects {
+            scope: workspaces::WorkBuddyScope { current_user_id: "private-identity".into(), assistant_cwd: assistant },
         }};
         request.validate().unwrap();
         let debug = format!("{request:?}");

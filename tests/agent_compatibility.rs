@@ -20,6 +20,26 @@ fn write_skill(source: &Path, version: &str) {
     .unwrap();
 }
 
+// Capture files and directories so refusals cannot silently leave rules, links,
+// or new source/local-data entries behind.
+#[cfg(windows)]
+fn snapshot_tree(root: &Path) -> std::collections::BTreeMap<std::path::PathBuf, Option<Vec<u8>>> {
+    fn visit(root: &Path, path: &Path, entries: &mut std::collections::BTreeMap<std::path::PathBuf, Option<Vec<u8>>>) {
+        for entry in fs::read_dir(path).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let kind = entry.file_type().unwrap();
+            assert!(!kind.is_symlink(), "unexpected fixture link: {}", path.display());
+            entries.insert(path.strip_prefix(root).unwrap().to_path_buf(),
+                if kind.is_dir() { None } else { Some(fs::read(&path).unwrap()) });
+            if kind.is_dir() { visit(root, &path, entries); }
+        }
+    }
+    let mut entries = std::collections::BTreeMap::new();
+    visit(root, root, &mut entries);
+    entries
+}
+
 fn run_case(id: &str, directory: &str, test_name: &str) {
     if std::env::var("PLEAT_COMPAT_CHILD").as_deref() != Ok(id) {
         let temp = tempfile::tempdir().unwrap();
@@ -120,7 +140,29 @@ fn run_case(id: &str, directory: &str, test_name: &str) {
         return;
     }
 
+    #[cfg(windows)]
+    let before = snapshot_tree(&root);
     let install = catalog().plan(Action::Install, &skill_ids, &agent_ids, &projects, &workspaces).unwrap();
+    #[cfg(windows)]
+    if matches!(id, "claude-code" | "opencode" | "pi" | "omp" | "grok" | "antigravity"
+        | "droid" | "copilot" | "trae" | "workbuddy" | "openclaw" | "hermes") {
+        const UNSUPPORTED: &str = "此平台尚未支持原生适配受管写入";
+        assert_eq!(install.items.len(), 1, "{id}");
+        assert_eq!(install.count(Disposition::Protected), 1, "{id}");
+        assert_eq!(install.count(Disposition::Change), 0, "{id}");
+        assert!(install.items[0].reason.as_deref().unwrap().contains(UNSUPPORTED), "{id}: {install:?}");
+        // A protected batch item is a no-op; the direct API reports the refusal.
+        assert_eq!(install.execute().changed(), 0, "{id}");
+        assert_eq!(snapshot_tree(&root), before, "{id}: blocked preview/execute changed fixture");
+        let target = agent.install_targets.iter().copied()
+            .find(|target| agent.owns_target(*target))
+            .unwrap();
+        let error = kitter::project::install_from_path(&project, &source, NAME, &[target]).unwrap_err();
+        assert!(format!("{error:#}").contains(UNSUPPORTED), "{id}: {error:#}");
+        assert!(project.join(directory).join(NAME).symlink_metadata().is_err(), "{id}: link created on refusal");
+        assert_eq!(snapshot_tree(&root), before, "{id}: refused install changed source/local-data or native entries");
+        return;
+    }
     assert_eq!(install.count(Disposition::Change), 1, "{id}");
     let result = install.execute();
     assert_eq!((result.changed(), result.failed()), (1, 0), "{id}: {result:?}");
@@ -219,6 +261,30 @@ fn explicit_agent_inspection_does_not_require_or_create_project_affiliation() {
     assert!(!projects.as_array().unwrap().iter().any(|p| p["path"] == serde_json::json!(project)));
 }
 
+// No native instruction entry is needed for an isolated Codex skill root.
+// Keep the direct API's pure directory-link path working on both platforms.
+#[test]
+fn plain_codex_direct_install_round_trip_on_unix_and_windows() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let source = root.join(NAME);
+    let project = root.join("project");
+    fs::create_dir(&source).unwrap();
+    fs::create_dir(&project).unwrap();
+    fs::create_dir(source.join("local-data")).unwrap();
+    fs::write(source.join("local-data/state.txt"), "keep state").unwrap();
+    write_skill(&source, "v1");
+    let original = fs::read(source.join("SKILL.md")).unwrap();
+    kitter::project::install_from_path(&project, &source, NAME, &[kitter::InstallTarget::Codex]).unwrap();
+    let installed = project.join(".codex/skills").join(NAME);
+    assert_eq!(installed.canonicalize().unwrap(), source);
+    assert_eq!(fs::read(installed.join("SKILL.md")).unwrap(), original);
+    kitter::project::uninstall(&project, &root, NAME, &[kitter::InstallTarget::Codex]).unwrap();
+    assert!(installed.symlink_metadata().is_err());
+    assert_eq!(fs::read(source.join("SKILL.md")).unwrap(), original);
+    assert_eq!(fs::read_to_string(source.join("local-data/state.txt")).unwrap(), "keep state");
+}
+
 #[test]
 fn replaced_project_identity_rejects_install_on_unix_and_windows() {
     let temp = tempfile::tempdir().unwrap();
@@ -281,11 +347,20 @@ fn workbuddy_global_directory_validation_precedes_any_write() {
     write_skill(&source, "v1");
     let result = kitter::project::install_from_path(&home, &source, NAME, &[kitter::InstallTarget::WorkBuddy]);
     if std::env::var(FLAG).as_deref() != Ok("relative") {
-        result.unwrap();
         let raw = std::env::var("WORKBUDDY_CONFIG_DIR").unwrap();
         let configured = if raw.trim().is_empty() { home.join(".workbuddy") }
             else { std::path::PathBuf::from(raw.trim()) };
-        assert_eq!(configured.join("skills").join(NAME).canonicalize().unwrap(), source);
+        #[cfg(unix)]
+        {
+            result.unwrap();
+            assert_eq!(configured.join("skills").join(NAME).canonicalize().unwrap(), source);
+        }
+        #[cfg(windows)]
+        {
+            let error = result.unwrap_err();
+            assert!(format!("{error:#}").contains("此平台尚未支持原生适配受管写入"), "{error:#}");
+            assert!(!configured.exists());
+        }
     } else {
         assert!(result.is_err());
         assert!(!home.join(".workbuddy").exists());

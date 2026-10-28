@@ -124,21 +124,29 @@ pub(crate) fn identity(path: &Path) -> Result<String> {
     }
     #[cfg(windows)]
     {
-        use std::{os::windows::{fs::OpenOptionsExt, io::AsRawHandle}, ffi::c_void};
-        #[repr(C)]
-        struct Info { attributes: u32, times: [u32; 6], volume: u32, size_high: u32, size_low: u32, links: u32, index_high: u32, index_low: u32 }
-        #[link(name = "kernel32")]
-        unsafe extern "system" { fn GetFileInformationByHandle(h: *mut c_void, info: *mut Info) -> i32; }
+        use std::os::windows::fs::OpenOptionsExt;
         let file = fs::OpenOptions::new().read(true).custom_flags(0x02000000 | 0x00200000).open(path)?;
-        let mut info: Info = unsafe { std::mem::zeroed() };
-        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
         let _ = m;
-        Ok(format!("{}:{}:{}", info.volume, info.index_high, info.index_low))
+        windows_file_identity(&file)
     }
     #[cfg(not(any(unix, windows)))]
     { let _ = m; bail!("此平台尚未支持可靠存储目录身份校验") }
+}
+
+/// Query the already-open object, so callers can bind bytes to an identity
+/// without reopening a path that may have been replaced in the meantime.
+#[cfg(windows)]
+pub(crate) fn windows_file_identity(file: &fs::File) -> Result<String> {
+    use std::{os::windows::io::AsRawHandle, ffi::c_void};
+    #[repr(C)]
+    struct Info { attributes: u32, times: [u32; 6], volume: u32, size_high: u32, size_low: u32, links: u32, index_high: u32, index_low: u32 }
+    #[link(name = "kernel32")]
+    unsafe extern "system" { fn GetFileInformationByHandle(h: *mut c_void, info: *mut Info) -> i32; }
+    let mut info: Info = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(format!("{}:{}:{}", info.volume, info.index_high, info.index_low))
 }
 
 fn same_volume(from: &Path, to_parent: &Path) -> Result<bool> {

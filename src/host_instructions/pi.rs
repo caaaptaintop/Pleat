@@ -138,6 +138,7 @@ mod tests {
     fn existing(installation: &Path) -> Result<Option<RulePlan>> {
         existing_for(InstallTarget::Pi, installation)
     }
+    #[cfg(unix)]
     #[test]
     fn pi_native_locator_is_stable_and_compatibility_roots_have_distinct_descriptors() {
         let temp = tempfile::tempdir().unwrap();
@@ -194,6 +195,7 @@ mod tests {
         assert!(refreshed.detach().unwrap());
     }
 
+    #[cfg(unix)]
     #[test]
     fn generated_extension_has_scope_and_source_identity_and_keeps_conflicts() {
         let temp = tempfile::tempdir().unwrap();

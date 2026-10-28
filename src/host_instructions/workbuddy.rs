@@ -61,7 +61,7 @@ fn validate_path(path: &Path) -> Result<()> {
         ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}')),
         "WorkBuddy 原生规则需要无控制字符的绝对路径");
     // Reject traversal before common normalization could discard it.
-    ensure!(!text.split('/').any(|part| matches!(part, "." | ".."))
+    ensure!(!text.split(std::path::is_separator).any(|part| matches!(part, "." | ".."))
         && !path.components().any(|part| matches!(part, Component::ParentDir | Component::CurDir)),
         "WorkBuddy 原生规则路径不支持点路径分量");
     Ok(())
@@ -200,8 +200,18 @@ mod tests {
         assert!(plan_at(Path::new("relative/rules"), &installed).is_err());
         assert!(plan_at(&rules, Path::new("relative/skills/demo")).is_err());
         assert!(plan_at(&root.join("runtime/user_rules"), &installed).is_err());
-        assert!(plan_at(&root.join("runtime/../other/rules"), &installed).is_err());
-        assert!(plan_at(&rules, &root.join("skills/./demo")).is_err());
+        // Joining onto a verbatim Windows path normalizes dot components
+        // before validation. Construct raw paths to exercise this boundary.
+        let traversal = std::path::PathBuf::from(format!("{}/runtime/../other/rules", root.display()));
+        let dot = std::path::PathBuf::from(format!("{}/skills/./demo", root.display()));
+        assert!(plan_at(&traversal, &installed).is_err());
+        assert!(plan_at(&rules, &dot).is_err());
+        #[cfg(windows)]
+        {
+            assert!(validate_path(Path::new(r"C:\runtime\rules")).is_ok());
+            assert!(validate_path(Path::new(r"C:\runtime\.\rules")).is_err());
+            assert!(validate_path(Path::new(r"C:\runtime\..\rules")).is_err());
+        }
         for control in ['\n', '\r', '\t', '\0', '\u{7f}', '\u{2028}', '\u{2029}'] {
             assert!(plan_at(&rules, &root.join(format!("skills/de{control}mo"))).is_err());
             assert!(plan_at(&root.join(format!("run{control}time/rules")), &installed).is_err());

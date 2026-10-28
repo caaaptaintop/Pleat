@@ -86,6 +86,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn fresh_global_publication_creates_missing_gemini_config_through_common_transaction() {
         let temp = tempfile::tempdir().unwrap();
@@ -109,6 +110,7 @@ mod tests {
         assert!(!root.join(".gemini/GEMINI.md").exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn common_transaction_is_idempotent_and_preserves_personal_and_skill_files() {
         let temp = tempfile::tempdir().unwrap();
@@ -155,6 +157,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn existing_content_and_changes_after_preview_are_preserved() {
         let temp = tempfile::tempdir().unwrap();
@@ -209,6 +212,7 @@ mod tests {
         assert_eq!(fs::read_dir(&source).unwrap().count(), 0);
     }
 
+    #[cfg(unix)]
     #[test]
     fn removal_preserves_the_rule_when_its_installation_changes_after_preview() {
         let temp = tempfile::tempdir().unwrap();
@@ -254,7 +258,8 @@ mod tests {
     #[test]
     fn quoted_path_components_are_json_strings() {
         let temp = tempfile::tempdir().unwrap();
-        let parent = temp.path().canonicalize().unwrap().join("project \"quoted\" \\ path");
+        let name = if cfg!(windows) { "project 中文 path" } else { "project \"quoted\" \\ path" };
+        let parent = temp.path().canonicalize().unwrap().join(name);
         fs::create_dir(&parent).unwrap();
         let config = parent.join(".agents");
         let installed = config.join("skills/demo");

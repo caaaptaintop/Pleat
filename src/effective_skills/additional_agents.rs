@@ -464,6 +464,8 @@ mod tests {
             .unwrap()
     }
 
+    // Managed native adaptation publication uses the Unix anchored transaction.
+    #[cfg(unix)]
     #[test]
     fn omp_project_install_round_trip_and_direct_discovery() {
         let temp = tempdir().unwrap();
@@ -506,6 +508,46 @@ mod tests {
             .unwrap();
         assert!(library.join("installed/SKILL.md").is_file());
         assert!(!repo.join(".omp/skills/installed").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn omp_project_install_rejects_native_write_before_creating_links() {
+        let temp = tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        let library = temp.path().join("library");
+        write_skill(&library, "installed", "");
+        let source = library.join("installed");
+        fs::create_dir(source.join("local-data")).unwrap();
+        fs::write(source.join("local-data/ADAPTATION.md"), "keep adaptation").unwrap();
+        fs::write(source.join("local-data/state.txt"), "keep state").unwrap();
+        let original = fs::read(source.join("SKILL.md")).unwrap();
+        let error = crate::project::install(&repo, &library, "installed", &[crate::InstallTarget::Omp])
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("此平台尚未支持原生适配受管写入"), "{error:#}");
+        assert!(repo.join(".omp/skills/installed").symlink_metadata().is_err());
+        assert_eq!(fs::read_dir(&repo).unwrap().count(), 0);
+        assert_eq!(fs::read(source.join("SKILL.md")).unwrap(), original);
+        assert_eq!(fs::read_to_string(source.join("local-data/ADAPTATION.md")).unwrap(), "keep adaptation");
+        assert_eq!(fs::read_to_string(source.join("local-data/state.txt")).unwrap(), "keep state");
+        assert_eq!(fs::read_dir(&source).unwrap().count(), 2);
+        assert_eq!(fs::read_dir(source.join("local-data")).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn omp_direct_discovery_without_install_is_cross_platform() {
+        let temp = tempdir().unwrap();
+        let home = temp.path().join("home");
+        let repo = temp.path().join("repo");
+        let cwd = repo.join("child");
+        fs::create_dir_all(&cwd).unwrap();
+        write_skill(&repo.join(".omp/skills"), "visible", "");
+        write_skill(&repo.join(".omp/skills/group"), "nested", "");
+        write_skill(&repo.join(".omp/skills"), ".hidden", "");
+        let result = estimate(&context(home, cwd, repo), AgentKind::Omp);
+        assert_eq!(result.skills.iter().filter(|skill| skill.name == "visible").count(), 1);
+        assert!(!result.skills.iter().any(|skill| skill.name == "nested" || skill.name == ".hidden"));
     }
 
     #[test]
