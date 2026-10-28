@@ -676,7 +676,7 @@ fn remove_alias(parent: &Directory, name: &Path, path: &Path) -> Result<()> {
     { let _ = (parent, name); directory_link::remove(path, directory_link::inspect(path)?.context("兼容入口缺失")?).map_err(Into::into) }
 }
 
-fn storage_path_spelling(path: &Path) -> PathBuf {
+pub(crate) fn storage_path_spelling(path: &Path) -> PathBuf {
     #[cfg(windows)]
     {
         use std::{ffi::OsString, os::windows::ffi::{OsStrExt, OsStringExt}, path::Prefix};

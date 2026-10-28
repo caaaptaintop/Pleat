@@ -617,7 +617,8 @@ impl Item {
                         let source = self.skill.source.canonicalize()?;
                         install_link(&self.path, &source)?;
                         let created = directory_link::inspect(&self.path)?.context("缺少刚创建的链接")?;
-                        ensure!(created.target == source, "新链接被替换，已保留当前对象");
+                        ensure!(crate::library::storage::storage_path_spelling(&created.target)
+                            == crate::library::storage::storage_path_spelling(&source), "新链接被替换，已保留当前对象");
                         self.operation = Some(Operation::Link { logical: logical.clone(), expected: Some(created), identity: Some(entry_identity(&self.path)?) });
                     }
                     #[cfg(test)]

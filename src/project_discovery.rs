@@ -852,7 +852,7 @@ mod tests {
         let locations = codex_sources::locations_for_config_files(selection.home.as_deref(), Some(&root),
             Some(&system), None, SqliteHomeEnv::KnownAbsent, None);
         assert!(locations.diagnostics.iter().any(|item| item.code == UnknownCode::ResolvedHomeUnavailable));
-        assert_eq!(locations.candidates.iter().map(|item| item.root.clone()).collect::<Vec<_>>(), [system_data]);
+        assert_eq!(locations.candidates.iter().map(|item| item.root.canonicalize().unwrap()).collect::<Vec<_>>(), [system_data]);
         let rows = discover_codex_locations_for(selection.home.as_deref(), &locations, &previous).unwrap();
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().any(|row| row.path == old));

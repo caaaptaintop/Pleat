@@ -25,9 +25,6 @@ pub(crate) fn inspect(path: &Path) -> io::Result<Option<DirectoryLink>> {
 
     #[cfg(windows)]
     if let Ok(target) = junction::get_target(path) {
-        // Junctions store a DOS path, while canonicalize returns a verbatim
-        // path. Compare existing targets in the same spelling as sources.
-        let target = target.canonicalize().unwrap_or(target);
         return Ok(Some(DirectoryLink {
             kind: DirectoryLinkKind::Junction,
             target,
@@ -138,11 +135,33 @@ mod tests {
         fs::create_dir(&target).unwrap();
         create(&target.canonicalize().unwrap(), &link).unwrap();
         let inspected = inspect(&link).unwrap().unwrap();
-        assert_eq!(inspected.target, target.canonicalize().unwrap());
+        assert_eq!(inspected.target.canonicalize().unwrap(), target.canonicalize().unwrap());
+        assert_eq!(inspected.target, junction::get_target(&link).unwrap());
         fs::remove_dir(&target).unwrap();
         assert_eq!(inspect(&link).unwrap().unwrap().target, junction::get_target(&link).unwrap());
         remove(&link, inspected).unwrap();
         assert!(!link.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn junction_inspection_preserves_literal_target_across_migration_aliases() {
+        let temp = tempfile::tempdir().unwrap();
+        let original = temp.path().join("original");
+        let moved = temp.path().join("moved");
+        let link = temp.path().join("installation");
+        fs::create_dir(&original).unwrap();
+        fs::write(original.join("canary"), "keep").unwrap();
+        create(&original, &link).unwrap();
+        let before = inspect(&link).unwrap().unwrap();
+        fs::rename(&original, &moved).unwrap();
+        create(&moved, &original).unwrap();
+        assert_eq!(inspect(&link).unwrap().unwrap(), before);
+        assert_eq!(link.canonicalize().unwrap(), moved.canonicalize().unwrap());
+        assert_eq!(fs::read(link.join("canary")).unwrap(), b"keep");
+        remove(&link, before).unwrap();
+        remove(&original, inspect(&original).unwrap().unwrap()).unwrap();
+        assert_eq!(fs::read(moved.join("canary")).unwrap(), b"keep");
     }
 
     #[cfg(unix)]

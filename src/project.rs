@@ -234,7 +234,10 @@ fn install_to_roots(
                 #[cfg(windows)]
                 directory_link::DirectoryLinkKind::Junction => fs::read_link(&path).ok(),
             };
-            ensure!(expected.target == source
+            // Compare only DOS/verbatim spelling. Resolving the stored target
+            // would lose migration aliases needed by rollback and recovery.
+            ensure!(crate::library::storage::storage_path_spelling(&expected.target)
+                    == crate::library::storage::storage_path_spelling(&source)
                 && (expected.kind != directory_link::DirectoryLinkKind::SymbolicLink || raw_target.as_ref() == Some(&source))
                 && crate::library::filesystem_identity(&path)? == identity,
                 "刚创建的安装链接身份或目标已变化，已保留");
@@ -842,7 +845,7 @@ mod tests {
     #[test]
     fn unsupported_native_writes_reject_before_creating_links_or_changing_sources() {
         let fixture = Fixture::new();
-        for target in [InstallTarget::Universal, InstallTarget::ClaudeCode,
+        for target in [InstallTarget::Universal, InstallTarget::ClaudeCode, InstallTarget::Cursor,
             InstallTarget::Pi, InstallTarget::Omp, InstallTarget::Grok,
             InstallTarget::Antigravity, InstallTarget::Droid, InstallTarget::Copilot,
             InstallTarget::Trae, InstallTarget::WorkBuddy] {
@@ -860,15 +863,15 @@ mod tests {
         let fixture = Fixture::new();
         let report = install_batch(&[fixture.project.clone()],
             &[("example".into(), fixture.source.clone())],
-            &[InstallTarget::Cursor, InstallTarget::ClaudeCode]);
-        assert_eq!(report.installed, 1);
+            &[InstallTarget::Codex, InstallTarget::ClaudeCode]);
+        assert_eq!(report.installed, 1, "{:?}", report.failures);
         assert_eq!(report.failures.len(), 1);
         assert!(report.failures[0].contains("此平台尚未支持原生适配受管写入"));
         assert!(!fixture.project.join(".claude").exists());
-        let link = fixture.installation(InstallTarget::Cursor);
+        let link = fixture.installation(InstallTarget::Codex);
         assert_eq!(link.canonicalize().unwrap(), fixture.source.canonicalize().unwrap());
-        install_from_path(&fixture.project, &fixture.source, "example", &[InstallTarget::Cursor]).unwrap();
-        uninstall(&fixture.project, &fixture.library, "example", &[InstallTarget::Cursor]).unwrap();
+        install_from_path(&fixture.project, &fixture.source, "example", &[InstallTarget::Codex]).unwrap();
+        uninstall(&fixture.project, &fixture.library, "example", &[InstallTarget::Codex]).unwrap();
         assert!(link.symlink_metadata().is_err());
         assert_eq!(fs::read(fixture.source.join("SKILL.md")).unwrap(), b"# Example");
     }
@@ -1381,6 +1384,7 @@ mod tests {
         fs::create_dir_all(&occupied).unwrap();
         fs::write(occupied.join("keep"), "user data").unwrap();
 
+        #[cfg(unix)]
         let error = install(
             &fixture.project,
             &fixture.library,
@@ -1388,6 +1392,12 @@ mod tests {
             &[InstallTarget::Universal, InstallTarget::ClaudeCode],
         )
         .unwrap_err();
+        // The public native-write path is unsupported on Windows. Exercise
+        // the same link preflight with two plain directory-link roots.
+        #[cfg(windows)]
+        let error = install_to_roots(&fixture.project, &fixture.source, "example",
+            [fixture.project.join(target_directory(InstallTarget::Universal)),
+             fixture.project.join(target_directory(InstallTarget::ClaudeCode))]).err().unwrap();
 
         assert!(error.to_string().contains("安装位置已被占用"));
         assert!(
